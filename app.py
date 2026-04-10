@@ -188,38 +188,70 @@ def build_arrival_pattern(df: pd.DataFrame) -> pd.DataFrame:
 # TABLE 2 — FORECASTED VOLUME
 # ─────────────────────────────────────────────────────────────
 
-def _forecast_holt_winters(series: np.ndarray, seasonal_periods: int, steps: int) -> np.ndarray:
-    """Holt-Winters (Triple Exponential Smoothing) forecast."""
-    if len(series) < 2 * seasonal_periods:
+def _build_hourly_time_series(df: pd.DataFrame) -> pd.Series:
+    """Build a continuous hourly volume time series from raw records."""
+    tmp = df.copy()
+    tmp["hour_floor"] = tmp["created_at"].dt.floor("h")
+    counts = tmp.groupby("hour_floor").size()
+    full_range = pd.date_range(
+        start=counts.index.min(), end=counts.index.max(), freq="h",
+    )
+    ts = counts.reindex(full_range, fill_value=0).astype(float)
+    ts.index.name = "Timestamp"
+    return ts
+
+
+def _forecast_hw_series(ts: pd.Series, steps: int) -> np.ndarray:
+    """Holt-Winters on a continuous hourly time series."""
+    vals = ts.values.astype(float)
+    n = len(vals)
+
+    if n >= 2 * 168:
+        sp = 168
+    elif n >= 2 * 24:
+        sp = 24
+    else:
+        sp = None
+
+    if sp:
         model = ExponentialSmoothing(
-            series.astype(float), trend="add", seasonal=None,
-            initialization_method="estimated",
+            vals, trend="add", seasonal="add",
+            seasonal_periods=sp, initialization_method="estimated",
         )
     else:
         model = ExponentialSmoothing(
-            series.astype(float), trend="add", seasonal="add",
-            seasonal_periods=seasonal_periods, initialization_method="estimated",
+            vals, trend="add", seasonal=None,
+            initialization_method="estimated",
         )
     fit = model.fit(optimized=True, use_brute=True)
     return np.maximum(fit.forecast(steps), 0)
 
 
-def _forecast_arima(series: np.ndarray, steps: int) -> np.ndarray:
-    """ARIMA(2,1,2) forecast — imported lazily to keep startup fast."""
+def _forecast_arima_series(ts: pd.Series, steps: int) -> np.ndarray:
+    """ARIMA on a continuous hourly time series."""
     from statsmodels.tsa.arima.model import ARIMA
-    model = ARIMA(series.astype(float), order=(2, 1, 2))
+    vals = ts.values.astype(float)
+    model = ARIMA(vals, order=(2, 1, 2))
     fit = model.fit()
-    pred = fit.forecast(steps=steps)
-    return np.maximum(pred, 0)
+    return np.maximum(fit.forecast(steps=steps), 0)
 
 
-def _forecast_moving_average(series: np.ndarray, steps: int, window: int = 4) -> np.ndarray:
-    """Simple weighted moving-average forecast repeating the last window pattern."""
-    if len(series) < window:
-        window = len(series)
-    pattern = series[-window:]
-    repeats = (steps // len(pattern)) + 1
-    return np.tile(pattern, repeats)[:steps].astype(float)
+def _forecast_wma_series(ts: pd.Series, steps: int) -> np.ndarray:
+    """Weighted moving-average: repeat last week's pattern with trend adjustment."""
+    vals = ts.values.astype(float)
+    if len(vals) >= 168:
+        last_week = vals[-168:]
+        prev_week = vals[-336:-168] if len(vals) >= 336 else last_week
+        growth = np.where(prev_week > 0, last_week / prev_week, 1.0)
+        growth = np.clip(growth, 0.5, 2.0)
+        pattern = last_week * growth
+    elif len(vals) >= 24:
+        pattern = vals[-24:]
+    else:
+        pattern = vals
+
+    repeats = (steps // len(pattern)) + 2
+    return np.maximum(np.tile(pattern, repeats)[:steps], 0)
 
 
 FORECAST_MODELS = {
@@ -230,37 +262,51 @@ FORECAST_MODELS = {
 
 
 def forecast_arrival_pattern(
+    df: pd.DataFrame,
     arrival_pattern: pd.DataFrame,
     model_key: str = "hw",
 ) -> pd.DataFrame:
     """
-    Forecast each day-column in the arrival pattern table independently,
-    returning a table in the same Hour × Day format.
+    Forecast the next 168 hours (one week) from the raw data's continuous
+    hourly time series, then reshape into the same Hour × Day table format.
     """
-    result = pd.DataFrame(index=arrival_pattern.index)
-    result.index.name = "Hour"
+    ts = _build_hourly_time_series(df)
 
-    for day_col in arrival_pattern.columns:
-        series = arrival_pattern[day_col].values.astype(float)
+    if len(ts) < 48:
+        return arrival_pattern.copy()
 
-        if series.sum() == 0:
-            result[day_col] = 0.0
-            continue
+    try:
+        if model_key == "hw":
+            forecast_vals = _forecast_hw_series(ts, 168)
+        elif model_key == "arima":
+            forecast_vals = _forecast_arima_series(ts, 168)
+        else:
+            forecast_vals = _forecast_wma_series(ts, 168)
+    except Exception:
+        forecast_vals = _forecast_wma_series(ts, 168)
 
-        try:
-            if model_key == "hw":
-                forecast_vals = _forecast_holt_winters(series, seasonal_periods=min(12, len(series) // 2), steps=24)
-            elif model_key == "arima":
-                forecast_vals = _forecast_arima(series, steps=24)
-            else:
-                forecast_vals = _forecast_moving_average(series, steps=24)
-        except Exception:
-            forecast_vals = _forecast_moving_average(series, steps=24)
+    last_ts = ts.index[-1]
+    future_idx = pd.date_range(start=last_ts + pd.Timedelta(hours=1), periods=168, freq="h")
+    forecast_series = pd.Series(forecast_vals, index=future_idx)
 
-        result[day_col] = np.round(forecast_vals, 1)
+    forecast_df = pd.DataFrame({
+        "hour": future_idx.hour,
+        "day_name": future_idx.day_name(),
+        "volume": np.round(forecast_vals, 1),
+    })
 
-    result = result.clip(lower=0)
-    return result
+    pivot = forecast_df.pivot_table(index="hour", columns="day_name", values="volume", aggfunc="mean")
+    pivot = pivot.reindex(columns=[d for d in DAY_ORDER if d in pivot.columns])
+    pivot = pivot.reindex(range(24), fill_value=0).fillna(0)
+    pivot.index = HOUR_LABELS
+    pivot.index.name = "Hour"
+
+    for col in arrival_pattern.columns:
+        if col not in pivot.columns:
+            pivot[col] = 0.0
+    pivot = pivot[[c for c in arrival_pattern.columns if c in pivot.columns]]
+
+    return pivot.clip(lower=0).round(1)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -560,7 +606,7 @@ def main():
     with st.spinner("Analysing arrival pattern …"):
         arrival_table = build_arrival_pattern(df_filtered)
     with st.spinner(f"Forecasting with {forecast_model_label} …"):
-        forecast_table = forecast_arrival_pattern(arrival_table, model_key=forecast_model_key)
+        forecast_table = forecast_arrival_pattern(df_filtered, arrival_table, model_key=forecast_model_key)
     with st.spinner(f"Calculating HC with {staffing_model_label} …"):
         hc_table = compute_hc_table(
             forecast_table,
