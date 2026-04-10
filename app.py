@@ -1,8 +1,11 @@
 """
-Volume Arrival & Forecasting Dashboard
-========================================
-A Streamlit-based WFM analytics dashboard for processing multi-team arrival data,
-categorizing by channel (Case vs. Chat), and providing high-accuracy forecasting.
+WFM Volume Arrival, Forecasting & Staffing Dashboard
+=====================================================
+A Streamlit-based WFM analytics dashboard that:
+  1. Accepts uploaded data with a `created_at` column
+  2. Builds an hourly arrival-pattern table (Hour rows × Day-of-week columns)
+  3. Forecasts volume using selectable models (Holt-Winters, ARIMA, Moving Average)
+  4. Calculates headcount (HC) required via Erlang-C or a simple productivity model
 
 Author: WFM Analytics Engine
 """
@@ -11,20 +14,21 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from scipy.special import factorial as _factorial
 import warnings
+import math
 import io
 
 warnings.filterwarnings("ignore")
 
 # ─────────────────────────────────────────────────────────────
-# PAGE CONFIG & CUSTOM CSS
+# PAGE CONFIG & CSS
 # ─────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="WFM Volume Arrival & Forecasting",
+    page_title="WFM Arrival, Forecast & Staffing",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -33,965 +37,703 @@ st.set_page_config(
 CUSTOM_CSS = """
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
-    html, body, [class*="css"] {
-        font-family: 'Inter', sans-serif;
-    }
-
-    /* Main header */
     .main-header {
         background: linear-gradient(135deg, #0F172A 0%, #1E3A5F 50%, #334155 100%);
-        padding: 1.8rem 2rem;
-        border-radius: 12px;
-        margin-bottom: 1.5rem;
-        border: 1px solid rgba(59, 130, 246, 0.2);
-        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+        padding: 1.8rem 2rem; border-radius: 12px; margin-bottom: 1.5rem;
+        border: 1px solid rgba(59,130,246,0.2);
+        box-shadow: 0 4px 24px rgba(0,0,0,0.3);
     }
-    .main-header h1 {
-        color: #F1F5F9;
-        font-size: 1.8rem;
-        font-weight: 700;
-        margin: 0;
-        letter-spacing: -0.02em;
-    }
-    .main-header p {
-        color: #94A3B8;
-        font-size: 0.95rem;
-        margin: 0.3rem 0 0 0;
-    }
+    .main-header h1 { color: #F1F5F9; font-size: 1.8rem; font-weight: 700; margin: 0; }
+    .main-header p  { color: #94A3B8; font-size: 0.95rem; margin: 0.3rem 0 0 0; }
 
-    /* Metric cards */
     .metric-card {
         background: linear-gradient(145deg, #1E293B, #0F172A);
-        border: 1px solid rgba(59, 130, 246, 0.15);
-        border-radius: 10px;
-        padding: 1.2rem 1.4rem;
-        text-align: center;
-        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        border: 1px solid rgba(59,130,246,0.15); border-radius: 10px;
+        padding: 1.2rem 1.4rem; text-align: center;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.2);
     }
-    .metric-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(59, 130, 246, 0.15);
-    }
-    .metric-card .metric-value {
-        font-size: 2rem;
-        font-weight: 700;
-        color: #3B82F6;
-        line-height: 1.2;
-    }
-    .metric-card .metric-label {
-        font-size: 0.8rem;
-        color: #94A3B8;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        margin-top: 0.3rem;
-    }
+    .metric-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(59,130,246,0.15); }
+    .metric-card .metric-value { font-size: 2rem; font-weight: 700; color: #3B82F6; }
+    .metric-card .metric-label { font-size: 0.8rem; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 0.3rem; }
 
-    /* Section headers */
-    .section-header {
-        color: #E2E8F0;
-        font-size: 1.15rem;
-        font-weight: 600;
-        border-left: 3px solid #3B82F6;
-        padding-left: 0.8rem;
-        margin: 1.5rem 0 0.8rem 0;
-    }
+    .section-header { color: #E2E8F0; font-size: 1.15rem; font-weight: 600;
+        border-left: 3px solid #3B82F6; padding-left: 0.8rem; margin: 1.5rem 0 0.8rem 0; }
 
-    /* Forecast badge */
-    .forecast-badge {
-        display: inline-block;
-        background: linear-gradient(135deg, #3B82F6, #2563EB);
-        color: white;
-        padding: 0.3rem 0.9rem;
-        border-radius: 20px;
-        font-size: 0.75rem;
-        font-weight: 600;
-        letter-spacing: 0.04em;
-        margin-bottom: 0.5rem;
-    }
+    .info-box { background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.2);
+        border-radius: 8px; padding: 1rem 1.2rem; margin: 0.8rem 0; font-size: 0.88rem; color: #CBD5E1; }
 
-    /* Tabs styling */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 0.5rem;
-        background: #1E293B;
-        padding: 0.5rem;
-        border-radius: 10px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px;
-        color: #94A3B8;
-        font-weight: 500;
-        font-size: 0.85rem;
-        padding: 0.5rem 1rem;
-    }
-    .stTabs [aria-selected="true"] {
-        background: #3B82F6 !important;
-        color: white !important;
-    }
+    .table-title { color: #E2E8F0; font-size: 1.05rem; font-weight: 600; margin: 1rem 0 0.5rem 0; }
 
-    /* Dataframe styling */
-    .stDataFrame {
-        border-radius: 8px;
-        overflow: hidden;
-    }
+    #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
 
-    /* Sidebar styling */
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0F172A 0%, #1E293B 100%);
-    }
+    [data-testid="stSidebar"] { background: linear-gradient(180deg, #0F172A 0%, #1E293B 100%); }
     [data-testid="stSidebar"] .stMarkdown h1,
     [data-testid="stSidebar"] .stMarkdown h2,
-    [data-testid="stSidebar"] .stMarkdown h3 {
-        color: #F1F5F9;
-    }
+    [data-testid="stSidebar"] .stMarkdown h3 { color: #F1F5F9; }
 
-    /* Peak hour highlight */
-    .peak-hour {
-        background: rgba(245, 158, 11, 0.15);
-        border-left: 3px solid #F59E0B;
-        padding: 0.5rem 1rem;
-        border-radius: 0 6px 6px 0;
-        margin: 0.3rem 0;
-        font-size: 0.85rem;
-        color: #FCD34D;
-    }
-
-    /* Info box */
-    .info-box {
-        background: rgba(59, 130, 246, 0.08);
-        border: 1px solid rgba(59, 130, 246, 0.2);
-        border-radius: 8px;
-        padding: 1rem 1.2rem;
-        margin: 0.8rem 0;
-        font-size: 0.88rem;
-        color: #CBD5E1;
-    }
-
-    /* Hide default streamlit elements */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-
-    /* Expander styling */
-    .streamlit-expanderHeader {
-        font-weight: 600;
-        color: #E2E8F0;
-    }
+    .stTabs [data-baseweb="tab-list"] { gap: 0.5rem; background: #1E293B; padding: 0.5rem; border-radius: 10px; }
+    .stTabs [data-baseweb="tab"] { border-radius: 8px; color: #94A3B8; font-weight: 500; font-size: 0.85rem; }
+    .stTabs [aria-selected="true"] { background: #3B82F6 !important; color: white !important; }
 </style>
 """
-
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────
-# COLOR PALETTE
-# ─────────────────────────────────────────────────────────────
 COLORS = {
-    "primary": "#3B82F6",
-    "primary_light": "#60A5FA",
-    "secondary": "#8B5CF6",
-    "accent": "#F59E0B",
-    "success": "#10B981",
-    "danger": "#EF4444",
-    "bg_dark": "#0F172A",
-    "bg_card": "#1E293B",
-    "bg_surface": "#334155",
-    "text_primary": "#F1F5F9",
-    "text_secondary": "#94A3B8",
-    "text_muted": "#64748B",
-    "case_color": "#3B82F6",
-    "chat_color": "#8B5CF6",
-    "forecast_color": "#F59E0B",
-    "grid_color": "rgba(148, 163, 184, 0.08)",
+    "primary": "#3B82F6", "secondary": "#8B5CF6", "accent": "#F59E0B",
+    "success": "#10B981", "danger": "#EF4444",
+    "bg_dark": "#0F172A", "bg_card": "#1E293B",
+    "text_primary": "#F1F5F9", "text_secondary": "#94A3B8",
+    "grid_color": "rgba(148,163,184,0.08)",
 }
 
 PLOTLY_LAYOUT = dict(
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(0,0,0,0)",
+    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     font=dict(family="Inter, sans-serif", color=COLORS["text_secondary"], size=12),
-    xaxis=dict(
-        gridcolor=COLORS["grid_color"],
-        zerolinecolor=COLORS["grid_color"],
-        tickfont=dict(size=10),
-    ),
-    yaxis=dict(
-        gridcolor=COLORS["grid_color"],
-        zerolinecolor=COLORS["grid_color"],
-        tickfont=dict(size=10),
-    ),
+    xaxis=dict(gridcolor=COLORS["grid_color"], zerolinecolor=COLORS["grid_color"]),
+    yaxis=dict(gridcolor=COLORS["grid_color"], zerolinecolor=COLORS["grid_color"]),
     margin=dict(l=50, r=30, t=50, b=50),
-    legend=dict(
-        bgcolor="rgba(30, 41, 59, 0.8)",
-        bordercolor="rgba(59, 130, 246, 0.2)",
-        borderwidth=1,
-        font=dict(color=COLORS["text_secondary"], size=11),
-    ),
-    hoverlabel=dict(
-        bgcolor=COLORS["bg_card"],
-        bordercolor=COLORS["primary"],
-        font=dict(color=COLORS["text_primary"], size=12),
-    ),
+    hoverlabel=dict(bgcolor=COLORS["bg_card"], bordercolor=COLORS["primary"],
+                    font=dict(color=COLORS["text_primary"], size=12)),
 )
 
+DAY_ORDER = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+HOUR_LABELS = [f"{h:02d}:00" for h in range(24)]
 
 # ─────────────────────────────────────────────────────────────
-# SYNTHETIC DATA GENERATOR
+# DATA LOADING & VALIDATION
 # ─────────────────────────────────────────────────────────────
-def generate_synthetic_data(
-    num_days: int = 30,
-    teams: list = None,
-    seed: int = 42,
-) -> pd.DataFrame:
-    """
-    Generate realistic WFM arrival data with intra-day seasonality,
-    day-of-week patterns, and realistic volume distributions.
-    """
-    if teams is None:
-        teams = ["Support", "Sales", "Tech"]
 
-    np.random.seed(seed)
+def load_and_validate(uploaded_file) -> pd.DataFrame | None:
+    """Read uploaded file and ensure it contains a `created_at` column."""
+    try:
+        name = uploaded_file.name.lower()
+        if name.endswith(".csv"):
+            df = pd.read_csv(uploaded_file)
+        elif name.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(uploaded_file)
+        else:
+            st.error("Unsupported file type. Please upload CSV or Excel.")
+            return None
+    except Exception as exc:
+        st.error(f"Error reading file: {exc}")
+        return None
 
-    record_types = {
-        "Support": ["Incident", "Service Request", "Escalation"],
-        "Sales": ["New Lead", "Renewal", "Upsell"],
-        "Tech": ["Bug Report", "Feature Request", "Maintenance"],
-    }
-    specializations = {
-        "Support": ["Billing", "Account", "Product"],
-        "Sales": ["Enterprise", "SMB", "Consumer"],
-        "Tech": ["Backend", "Frontend", "Infrastructure"],
-    }
-    origins = ["Case", "Chat"]
+    col_map = {c: c.strip().lower().replace(" ", "_") for c in df.columns}
+    df.rename(columns=col_map, inplace=True)
 
-    records = []
-    start_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=num_days)
+    if "created_at" not in df.columns:
+        st.error(
+            "The uploaded file must contain a **created_at** column. "
+            f"Found columns: {', '.join(df.columns.tolist())}"
+        )
+        return None
 
-    for day_offset in range(num_days):
-        current_date = start_date + timedelta(days=day_offset)
-        day_of_week = current_date.weekday()
+    df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce")
+    before = len(df)
+    df.dropna(subset=["created_at"], inplace=True)
+    dropped = before - len(df)
+    if dropped:
+        st.warning(f"Dropped {dropped} rows with un-parseable created_at values.")
 
-        # Day-of-week multiplier (Mon=busy, Sun=quiet)
-        dow_multiplier = {
-            0: 1.3, 1: 1.2, 2: 1.15, 3: 1.1, 4: 1.0,
-            5: 0.5, 6: 0.3,
-        }.get(day_of_week, 1.0)
+    if "team" not in df.columns:
+        df["team"] = "All"
 
-        for hour in range(24):
-            # Intra-day seasonality: peaks at 10am and 2pm
-            hour_multiplier = (
-                0.1 + 0.9 * np.exp(-0.5 * ((hour - 10) / 2.5) ** 2)
-                + 0.7 * np.exp(-0.5 * ((hour - 14) / 2.5) ** 2)
-            )
+    df["team"] = df["team"].astype(str).str.strip()
 
-            for team in teams:
-                base_volume = {"Support": 25, "Sales": 15, "Tech": 10}.get(team, 15)
-
-                for origin in origins:
-                    origin_weight = 0.65 if origin == "Case" else 0.35
-                    expected = base_volume * dow_multiplier * hour_multiplier * origin_weight
-
-                    # Poisson-distributed arrivals
-                    count = max(0, np.random.poisson(max(0.1, expected)))
-
-                    for _ in range(count):
-                        minute = np.random.randint(0, 60)
-                        second = np.random.randint(0, 60)
-                        ts = current_date + timedelta(hours=hour, minutes=minute, seconds=second)
-
-                        team_recs = record_types.get(team, ["General"])
-                        team_specs = specializations.get(team, ["General"])
-
-                        records.append({
-                            "Timestamp": ts,
-                            "Team": team,
-                            "Origin": origin,
-                            "Record Type": np.random.choice(team_recs),
-                            "Specialization": np.random.choice(team_specs),
-                        })
-
-    df = pd.DataFrame(records)
-    if len(df) > 0:
-        df = df.sort_values("Timestamp").reset_index(drop=True)
     return df
 
 
 # ─────────────────────────────────────────────────────────────
-# DATA PROCESSING
+# TABLE 1 — VOLUME ARRIVAL PATTERN
 # ─────────────────────────────────────────────────────────────
-def validate_columns(df: pd.DataFrame) -> tuple:
-    """Validate that the DataFrame has all required columns."""
-    required = {"Timestamp", "Team", "Origin", "Record Type", "Specialization"}
-    missing = required - set(df.columns)
-    if missing:
-        return False, f"Missing columns: {', '.join(missing)}"
-    return True, "All columns present."
+
+def build_arrival_pattern(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Pivot data into an arrival-pattern table:
+      rows  = Hour (00:00 – 23:00)
+      cols  = Day of week (Sunday … Saturday)
+      value = average volume per hour-day combination
+    """
+    tmp = df.copy()
+    tmp["day_name"] = tmp["created_at"].dt.day_name()
+    tmp["hour"] = tmp["created_at"].dt.hour
+
+    counts = (
+        tmp.groupby(["hour", "day_name"])
+        .size()
+        .reset_index(name="volume")
+    )
+
+    n_weeks_per_day = (
+        tmp.groupby("day_name")["created_at"]
+        .apply(lambda s: s.dt.date.nunique())
+        .reset_index(name="n_days")
+    )
+    counts = counts.merge(n_weeks_per_day, on="day_name", how="left")
+    counts["avg_volume"] = (counts["volume"] / counts["n_days"]).round(1)
+
+    pivot = counts.pivot(index="hour", columns="day_name", values="avg_volume")
+    pivot = pivot.reindex(columns=[d for d in DAY_ORDER if d in pivot.columns])
+    pivot = pivot.reindex(range(24), fill_value=0)
+    pivot.index = HOUR_LABELS
+    pivot.index.name = "Hour"
+    pivot = pivot.fillna(0)
+
+    return pivot
 
 
-def parse_and_clean(df: pd.DataFrame) -> pd.DataFrame:
-    """Parse timestamps and clean data."""
-    df = df.copy()
+# ─────────────────────────────────────────────────────────────
+# TABLE 2 — FORECASTED VOLUME
+# ─────────────────────────────────────────────────────────────
 
-    # Parse Timestamp
-    for fmt in [None, "%Y-%m-%d %H:%M:%S", "%m/%d/%Y %H:%M", "%d-%m-%Y %H:%M:%S"]:
-        try:
-            df["Timestamp"] = pd.to_datetime(df["Timestamp"], format=fmt)
-            break
-        except (ValueError, TypeError):
+def _forecast_holt_winters(series: np.ndarray, seasonal_periods: int, steps: int) -> np.ndarray:
+    """Holt-Winters (Triple Exponential Smoothing) forecast."""
+    if len(series) < 2 * seasonal_periods:
+        model = ExponentialSmoothing(
+            series.astype(float), trend="add", seasonal=None,
+            initialization_method="estimated",
+        )
+    else:
+        model = ExponentialSmoothing(
+            series.astype(float), trend="add", seasonal="add",
+            seasonal_periods=seasonal_periods, initialization_method="estimated",
+        )
+    fit = model.fit(optimized=True, use_brute=True)
+    return np.maximum(fit.forecast(steps), 0)
+
+
+def _forecast_arima(series: np.ndarray, steps: int) -> np.ndarray:
+    """ARIMA(2,1,2) forecast — imported lazily to keep startup fast."""
+    from statsmodels.tsa.arima.model import ARIMA
+    model = ARIMA(series.astype(float), order=(2, 1, 2))
+    fit = model.fit()
+    pred = fit.forecast(steps=steps)
+    return np.maximum(pred, 0)
+
+
+def _forecast_moving_average(series: np.ndarray, steps: int, window: int = 4) -> np.ndarray:
+    """Simple weighted moving-average forecast repeating the last window pattern."""
+    if len(series) < window:
+        window = len(series)
+    pattern = series[-window:]
+    repeats = (steps // len(pattern)) + 1
+    return np.tile(pattern, repeats)[:steps].astype(float)
+
+
+FORECAST_MODELS = {
+    "Holt-Winters (recommended)": "hw",
+    "ARIMA (2,1,2)": "arima",
+    "Weighted Moving Average": "wma",
+}
+
+
+def forecast_arrival_pattern(
+    arrival_pattern: pd.DataFrame,
+    model_key: str = "hw",
+) -> pd.DataFrame:
+    """
+    Forecast each day-column in the arrival pattern table independently,
+    returning a table in the same Hour × Day format.
+    """
+    result = pd.DataFrame(index=arrival_pattern.index)
+    result.index.name = "Hour"
+
+    for day_col in arrival_pattern.columns:
+        series = arrival_pattern[day_col].values.astype(float)
+
+        if series.sum() == 0:
+            result[day_col] = 0.0
             continue
 
-    df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
-    initial_count = len(df)
-    df = df.dropna(subset=["Timestamp"])
-    dropped = initial_count - len(df)
+        try:
+            if model_key == "hw":
+                forecast_vals = _forecast_holt_winters(series, seasonal_periods=min(12, len(series) // 2), steps=24)
+            elif model_key == "arima":
+                forecast_vals = _forecast_arima(series, steps=24)
+            else:
+                forecast_vals = _forecast_moving_average(series, steps=24)
+        except Exception:
+            forecast_vals = _forecast_moving_average(series, steps=24)
 
-    # Normalize Origin column
-    df["Origin"] = df["Origin"].astype(str).str.strip().str.title()
-    df.loc[~df["Origin"].isin(["Case", "Chat"]), "Origin"] = "Case"
+        result[day_col] = np.round(forecast_vals, 1)
 
-    # Clean string columns
-    for col in ["Team", "Record Type", "Specialization"]:
-        df[col] = df[col].astype(str).str.strip()
-
-    if dropped > 0:
-        st.warning(f"⚠️ Dropped {dropped} rows with unparseable timestamps.")
-
-    return df
-
-
-def resample_hourly(df: pd.DataFrame, origin: str, group_cols: list = None) -> pd.DataFrame:
-    """
-    Resample data to 1-hour intervals, filling missing intervals with zeros.
-    Creates a continuous timeline.
-    """
-    filtered = df[df["Origin"] == origin].copy()
-
-    if filtered.empty:
-        return pd.DataFrame(columns=["Timestamp", "Volume"])
-
-    filtered["Hour"] = filtered["Timestamp"].dt.floor("h")
-
-    if group_cols:
-        volume = filtered.groupby(["Hour"] + group_cols).size().reset_index(name="Volume")
-    else:
-        volume = filtered.groupby("Hour").size().reset_index(name="Volume")
-
-    # Create continuous hourly range
-    full_range = pd.date_range(
-        start=df["Timestamp"].min().floor("h"),
-        end=df["Timestamp"].max().floor("h"),
-        freq="h",
-    )
-    full_df = pd.DataFrame({"Hour": full_range})
-
-    if group_cols:
-        # For grouped data, ensure all hours exist for each group
-        from itertools import product
-
-        unique_combos = filtered[group_cols].drop_duplicates()
-        combo_dicts = unique_combos.to_dict("records")
-        rows = []
-        for combo in combo_dicts:
-            for h in full_range:
-                row = {"Hour": h}
-                row.update(combo)
-                rows.append(row)
-        full_df = pd.DataFrame(rows)
-        volume = full_df.merge(volume, on=["Hour"] + group_cols, how="left").fillna({"Volume": 0})
-    else:
-        volume = full_df.merge(volume, on="Hour", how="left").fillna({"Volume": 0})
-
-    volume["Volume"] = volume["Volume"].astype(int)
-    volume = volume.rename(columns={"Hour": "Timestamp"})
-    return volume.sort_values("Timestamp").reset_index(drop=True)
-
-
-# ─────────────────────────────────────────────────────────────
-# FORECASTING ENGINE
-# ─────────────────────────────────────────────────────────────
-def forecast_volume(
-    hourly_data: pd.DataFrame,
-    forecast_hours: int = 168,
-    min_data_points: int = 48,
-) -> pd.DataFrame:
-    """
-    Forecast hourly volume using Triple Exponential Smoothing (Holt-Winters).
-    Models: y_t = Trend + Seasonality_daily + Seasonality_weekly + ε
-
-    Falls back to simpler models if data is insufficient for full seasonal decomposition.
-    """
-    if hourly_data.empty or len(hourly_data) < min_data_points:
-        return pd.DataFrame(columns=["Timestamp", "Forecast", "Lower", "Upper"])
-
-    ts = hourly_data.set_index("Timestamp")["Volume"].copy()
-    ts = ts.asfreq("h", fill_value=0)
-
-    # Ensure non-negative and add small constant for multiplicative models
-    ts = ts.clip(lower=0)
-
-    last_timestamp = ts.index[-1]
-    future_index = pd.date_range(
-        start=last_timestamp + timedelta(hours=1),
-        periods=forecast_hours,
-        freq="h",
-    )
-
-    try:
-        data_length = len(ts)
-
-        if data_length >= 168:
-            # Full weekly seasonality (168 hours = 7 days)
-            seasonal_periods = 168
-        elif data_length >= 24:
-            # Daily seasonality
-            seasonal_periods = 24
-        else:
-            # Simple exponential smoothing (no seasonality)
-            seasonal_periods = None
-
-        if seasonal_periods and data_length >= 2 * seasonal_periods:
-            model = ExponentialSmoothing(
-                ts.values.astype(float),
-                trend="add",
-                seasonal="add",
-                seasonal_periods=seasonal_periods,
-                initialization_method="estimated",
-            )
-            fit = model.fit(optimized=True, use_brute=True)
-            forecast = fit.forecast(forecast_hours)
-
-            # Prediction intervals (approximate via residual std)
-            residuals = ts.values - fit.fittedvalues
-            residual_std = np.std(residuals)
-            lower = forecast - 1.96 * residual_std
-            upper = forecast + 1.96 * residual_std
-        elif seasonal_periods:
-            model = ExponentialSmoothing(
-                ts.values.astype(float),
-                trend="add",
-                seasonal=None,
-                initialization_method="estimated",
-            )
-            fit = model.fit(optimized=True)
-            forecast = fit.forecast(forecast_hours)
-
-            residuals = ts.values - fit.fittedvalues
-            residual_std = np.std(residuals)
-            lower = forecast - 1.96 * residual_std
-            upper = forecast + 1.96 * residual_std
-        else:
-            model = ExponentialSmoothing(
-                ts.values.astype(float),
-                trend=None,
-                seasonal=None,
-                initialization_method="estimated",
-            )
-            fit = model.fit(optimized=True)
-            forecast = fit.forecast(forecast_hours)
-
-            residuals = ts.values - fit.fittedvalues
-            residual_std = np.std(residuals)
-            lower = forecast - 1.96 * residual_std
-            upper = forecast + 1.96 * residual_std
-
-    except Exception as e:
-        # Ultimate fallback: use last 7 days' hourly averages
-        st.info(f"ℹ️ Using moving-average fallback for forecast: {e}")
-        if data_length >= 168:
-            pattern = ts.values[-168:]
-        elif data_length >= 24:
-            pattern = ts.values[-24:]
-        else:
-            pattern = ts.values
-
-        repeats = (forecast_hours // len(pattern)) + 1
-        forecast = np.tile(pattern, repeats)[:forecast_hours].astype(float)
-        residual_std = np.std(ts.values)
-        lower = forecast - 1.96 * residual_std
-        upper = forecast + 1.96 * residual_std
-
-    # Ensure non-negative
-    forecast = np.maximum(forecast, 0)
-    lower = np.maximum(lower, 0)
-
-    result = pd.DataFrame({
-        "Timestamp": future_index,
-        "Forecast": np.round(forecast).astype(int),
-        "Lower": np.round(lower).astype(int),
-        "Upper": np.round(upper.astype(float)).astype(int),
-    })
+    result = result.clip(lower=0)
     return result
 
 
 # ─────────────────────────────────────────────────────────────
-# VISUALIZATION
+# TABLE 3 — HEADCOUNT (HC) REQUIRED
 # ─────────────────────────────────────────────────────────────
-def create_volume_chart(
-    hourly_data: pd.DataFrame,
-    forecast_data: pd.DataFrame,
-    title: str,
-    color: str,
-    show_forecast: bool = True,
-) -> go.Figure:
-    """Create an interactive Plotly chart with historical data and forecast."""
-    fig = go.Figure()
 
-    # Historical data
-    if not hourly_data.empty:
-        fig.add_trace(go.Scatter(
-            x=hourly_data["Timestamp"],
-            y=hourly_data["Volume"],
-            mode="lines",
-            name="Actual Volume",
-            line=dict(color=color, width=2),
-            fill="tozeroy",
-            fillcolor=f"rgba({int(color[1:3], 16)}, {int(color[3:5], 16)}, {int(color[5:7], 16)}, 0.08)",
-            hovertemplate="<b>%{x}</b><br>Volume: %{y:,.0f}<extra></extra>",
-        ))
-
-    # Forecast
-    if show_forecast and not forecast_data.empty:
-        fig.add_trace(go.Scatter(
-            x=forecast_data["Timestamp"],
-            y=forecast_data["Forecast"],
-            mode="lines",
-            name="Forecast",
-            line=dict(color=COLORS["forecast_color"], width=2, dash="dash"),
-            hovertemplate="<b>%{x}</b><br>Forecast: %{y:,.0f}<extra></extra>",
-        ))
-
-        # Confidence interval
-        fig.add_trace(go.Scatter(
-            x=pd.concat([forecast_data["Timestamp"], forecast_data["Timestamp"][::-1]]),
-            y=pd.concat([forecast_data["Upper"], forecast_data["Lower"][::-1]]),
-            fill="toself",
-            fillcolor="rgba(245, 158, 11, 0.08)",
-            line=dict(color="rgba(245, 158, 11, 0)"),
-            name="95% Confidence",
-            hoverinfo="skip",
-        ))
-
-    fig.update_layout(
-        title=dict(text=title, font=dict(size=15, color=COLORS["text_primary"])),
-        height=380,
-        **PLOTLY_LAYOUT,
-    )
-    fig.update_xaxes(title_text="Time", rangeslider=dict(visible=True, thickness=0.04))
-    fig.update_yaxes(title_text="Volume")
-
-    return fig
+def _erlang_c(n: int, a: float) -> float:
+    """
+    Erlang-C probability that a call must wait.
+    n = number of agents, a = offered traffic (Erlangs)
+    """
+    if n <= 0 or a <= 0:
+        return 0.0
+    if n <= a:
+        return 1.0
+    try:
+        inv_b = sum((a ** k) / math.factorial(k) for k in range(n))
+        last = (a ** n) / math.factorial(n) * (n / (n - a))
+        ec = last / (inv_b + last)
+        return max(0.0, min(ec, 1.0))
+    except (OverflowError, ZeroDivisionError, ValueError):
+        return 1.0
 
 
-def create_heatmap(hourly_data: pd.DataFrame, title: str, color_scale: str = "Blues") -> go.Figure:
-    """Create hour-of-day vs day-of-week heatmap."""
-    if hourly_data.empty:
-        return go.Figure()
+def _erlang_c_agents(
+    volume: float,
+    aht_seconds: float = 300,
+    service_level_target: float = 0.80,
+    target_answer_time: float = 30,
+    shrinkage: float = 0.30,
+    interval_seconds: float = 3600,
+) -> int:
+    """
+    Compute minimum agents needed to meet SL target using Erlang-C.
+    Returns agent count including shrinkage.
+    """
+    if volume <= 0:
+        return 0
 
-    df = hourly_data.copy()
-    df["DayOfWeek"] = df["Timestamp"].dt.day_name()
-    df["Hour"] = df["Timestamp"].dt.hour
+    traffic_erlangs = (volume * aht_seconds) / interval_seconds
 
-    pivot = df.pivot_table(values="Volume", index="DayOfWeek", columns="Hour", aggfunc="mean")
+    agents = max(1, int(math.ceil(traffic_erlangs)))
+    for n in range(agents, agents + 1000):
+        ec = _erlang_c(n, traffic_erlangs)
+        if n <= traffic_erlangs:
+            continue
+        sl = 1.0 - ec * math.exp(-(n - traffic_erlangs) * target_answer_time / aht_seconds)
+        if sl >= service_level_target:
+            return int(math.ceil(n / (1 - shrinkage)))
 
-    day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    pivot = pivot.reindex([d for d in day_order if d in pivot.index])
+    return int(math.ceil((traffic_erlangs + 1) / (1 - shrinkage)))
 
+
+def _simple_productivity_hc(
+    volume: float,
+    aht_minutes: float = 5.0,
+    utilization: float = 0.75,
+    shrinkage: float = 0.30,
+) -> int:
+    """Simple productivity-based HC = Volume × AHT / (60 × Utilization × (1 - Shrinkage))."""
+    if volume <= 0:
+        return 0
+    raw = (volume * aht_minutes) / (60.0 * utilization * (1 - shrinkage))
+    return int(math.ceil(raw))
+
+
+STAFFING_MODELS = {
+    "Erlang-C (recommended)": "erlang_c",
+    "Simple Productivity Model": "productivity",
+}
+
+
+def compute_hc_table(
+    forecast_table: pd.DataFrame,
+    staffing_model: str = "erlang_c",
+    aht_seconds: float = 300,
+    service_level: float = 0.80,
+    target_answer_time: float = 30,
+    shrinkage: float = 0.30,
+    utilization: float = 0.75,
+) -> pd.DataFrame:
+    """
+    Compute HC required for every cell in the forecasted-volume table.
+    """
+    result = pd.DataFrame(index=forecast_table.index)
+    result.index.name = "Hour"
+
+    for day_col in forecast_table.columns:
+        hc_list = []
+        for vol in forecast_table[day_col].values:
+            if staffing_model == "erlang_c":
+                hc = _erlang_c_agents(
+                    volume=vol,
+                    aht_seconds=aht_seconds,
+                    service_level_target=service_level,
+                    target_answer_time=target_answer_time,
+                    shrinkage=shrinkage,
+                )
+            else:
+                hc = _simple_productivity_hc(
+                    volume=vol,
+                    aht_minutes=aht_seconds / 60.0,
+                    utilization=utilization,
+                    shrinkage=shrinkage,
+                )
+            hc_list.append(hc)
+        result[day_col] = hc_list
+
+    return result
+
+
+# ─────────────────────────────────────────────────────────────
+# VISUALISATION HELPERS
+# ─────────────────────────────────────────────────────────────
+
+def heatmap_figure(table: pd.DataFrame, title: str, colorscale: str = "Blues") -> go.Figure:
+    """Generic heatmap from a Hour × Day pivot."""
     fig = go.Figure(data=go.Heatmap(
-        z=pivot.values,
-        x=[f"{h:02d}:00" for h in pivot.columns],
-        y=pivot.index,
-        colorscale=color_scale,
-        hovertemplate="<b>%{y} %{x}</b><br>Avg Volume: %{z:.1f}<extra></extra>",
+        z=table.values,
+        x=table.columns.tolist(),
+        y=table.index.tolist(),
+        colorscale=colorscale,
+        hovertemplate="<b>%{y} – %{x}</b><br>Value: %{z:.1f}<extra></extra>",
     ))
-
     fig.update_layout(
         title=dict(text=title, font=dict(size=14, color=COLORS["text_primary"])),
-        height=300,
+        height=500, yaxis=dict(autorange="reversed"),
         **PLOTLY_LAYOUT,
     )
     return fig
 
 
-def style_dataframe(df: pd.DataFrame, peak_col: str = "Volume"):
-    """Apply conditional formatting to highlight peak volume hours."""
-    if df.empty:
-        return df.style
-
-    def highlight_peaks(s):
-        if s.name != peak_col:
-            return [""] * len(s)
-        threshold = s.quantile(0.9)
-        return [
-            "background-color: rgba(245, 158, 11, 0.25); color: #FCD34D; font-weight: 600"
-            if v >= threshold else ""
-            for v in s
-        ]
-
-    styled = df.style.apply(highlight_peaks).format(
-        {peak_col: "{:,.0f}"} if peak_col in df.columns else {}
+def comparison_bar_chart(arrival: pd.DataFrame, forecast: pd.DataFrame, day: str) -> go.Figure:
+    """Side-by-side bar chart comparing actual vs forecast for a given day."""
+    fig = go.Figure()
+    if day in arrival.columns:
+        fig.add_trace(go.Bar(
+            x=arrival.index, y=arrival[day], name="Actual Avg",
+            marker_color=COLORS["primary"], opacity=0.8,
+        ))
+    if day in forecast.columns:
+        fig.add_trace(go.Bar(
+            x=forecast.index, y=forecast[day], name="Forecast",
+            marker_color=COLORS["accent"], opacity=0.8,
+        ))
+    fig.update_layout(
+        title=dict(text=f"{day} — Actual vs Forecast", font=dict(size=14, color=COLORS["text_primary"])),
+        barmode="group", height=380,
+        **PLOTLY_LAYOUT,
     )
-    return styled
+    return fig
 
 
-# ─────────────────────────────────────────────────────────────
-# RENDER HELPERS
-# ─────────────────────────────────────────────────────────────
-def render_metrics(data: pd.DataFrame, origin: str, prefix: str = ""):
-    """Render KPI metric cards."""
-    filtered = data[data["Origin"] == origin] if "Origin" in data.columns else data
-    hourly = resample_hourly(data if "Origin" in data.columns else data, origin)
-
-    total_volume = len(filtered) if "Origin" in data.columns else hourly["Volume"].sum()
-    peak_volume = hourly["Volume"].max() if not hourly.empty else 0
-    avg_volume = hourly["Volume"].mean() if not hourly.empty else 0
-
-    if not hourly.empty and peak_volume > 0:
-        peak_hour_row = hourly.loc[hourly["Volume"].idxmax()]
-        peak_time = peak_hour_row["Timestamp"].strftime("%a %I %p")
-    else:
-        peak_time = "N/A"
-
-    cols = st.columns(4)
-    metrics_data = [
-        (f"{total_volume:,}", "Total Volume"),
-        (f"{peak_volume:,}", "Peak Hourly Vol."),
-        (f"{avg_volume:,.1f}", "Avg Hourly Vol."),
-        (peak_time, "Peak Time"),
-    ]
-
-    for col, (value, label) in zip(cols, metrics_data):
-        col.markdown(
-            f"""<div class="metric-card">
-                <div class="metric-value">{value}</div>
-                <div class="metric-label">{prefix}{label}</div>
-            </div>""",
-            unsafe_allow_html=True,
-        )
-
-
-def render_volume_section(
-    data: pd.DataFrame,
-    origin: str,
-    color: str,
-    key_prefix: str,
-    show_forecast: bool = True,
-):
-    """Render a complete volume section: metrics, chart, table, and forecast."""
-    emoji = "📋" if origin == "Case" else "💬"
-    st.markdown(
-        f'<div class="section-header">{emoji} {origin} Volume Analysis</div>',
-        unsafe_allow_html=True,
+def weekly_total_chart(table: pd.DataFrame, title: str, color: str) -> go.Figure:
+    """Bar chart of total volume per day."""
+    totals = table.sum()
+    fig = go.Figure(go.Bar(
+        x=totals.index, y=totals.values,
+        marker_color=color, text=totals.values.round(0).astype(int),
+        textposition="outside",
+    ))
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=14, color=COLORS["text_primary"])),
+        height=350, **PLOTLY_LAYOUT,
     )
-
-    render_metrics(data, origin, f"{origin} ")
-
-    hourly = resample_hourly(data, origin)
-
-    if hourly.empty:
-        st.info(f"No {origin} data available for the selected filters.")
-        return
-
-    # Forecast
-    forecast_df = pd.DataFrame()
-    if show_forecast:
-        with st.spinner(f"🔮 Generating {origin} forecast..."):
-            forecast_df = forecast_volume(hourly)
-
-    # Chart
-    fig = create_volume_chart(
-        hourly,
-        forecast_df,
-        f"Hourly {origin} Volume — Actuals vs. 7-Day Forecast",
-        color,
-        show_forecast=show_forecast and not forecast_df.empty,
-    )
-    st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_{origin}_chart")
-
-    # Heatmap
-    heatmap_scale = "Blues" if origin == "Case" else "Purples"
-    heatmap = create_heatmap(hourly, f"Average {origin} Volume — Hour × Day Heatmap", heatmap_scale)
-    st.plotly_chart(heatmap, use_container_width=True, key=f"{key_prefix}_{origin}_heatmap")
-
-    # Tables
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown(f"**📊 Hourly {origin} Volume (Last 48h)**")
-        recent = hourly.tail(48).copy()
-        recent["Timestamp"] = recent["Timestamp"].dt.strftime("%Y-%m-%d %H:%M")
-        st.dataframe(
-            style_dataframe(recent),
-            use_container_width=True,
-            height=350,
-            key=f"{key_prefix}_{origin}_table",
-        )
-
-    with col2:
-        if not forecast_df.empty:
-            st.markdown(
-                '<span class="forecast-badge">🔮 7-DAY FORECAST</span>',
-                unsafe_allow_html=True,
-            )
-            st.markdown(f"**Forecasted {origin} Volume (Next 168h)**")
-            display_forecast = forecast_df.copy()
-            display_forecast["Timestamp"] = display_forecast["Timestamp"].dt.strftime("%Y-%m-%d %H:%M")
-            st.dataframe(
-                style_dataframe(display_forecast, "Forecast"),
-                use_container_width=True,
-                height=350,
-                key=f"{key_prefix}_{origin}_forecast_table",
-            )
-
-            # Forecast summary
-            st.markdown(
-                f"""<div class="info-box">
-                    <strong>Forecast Summary:</strong><br>
-                    📈 Total Predicted: <strong>{forecast_df['Forecast'].sum():,}</strong> |
-                    🔺 Peak Forecast: <strong>{forecast_df['Forecast'].max():,}</strong> |
-                    📊 Avg/Hour: <strong>{forecast_df['Forecast'].mean():.1f}</strong>
-                </div>""",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.info("Insufficient data to generate forecast (need at least 48 data points).")
-
-
-def render_tab_content(data: pd.DataFrame, tab_name: str, key_prefix: str):
-    """Render the full content of a tab (Master or Team)."""
-    show_forecast = st.checkbox(
-        "🔮 Enable 7-Day Forecast",
-        value=True,
-        key=f"{key_prefix}_forecast_toggle",
-        help="Generate a 168-hour forecast using Exponential Smoothing",
-    )
-
-    render_volume_section(data, "Case", COLORS["case_color"], key_prefix, show_forecast)
-    st.divider()
-    render_volume_section(data, "Chat", COLORS["chat_color"], key_prefix, show_forecast)
+    return fig
 
 
 # ─────────────────────────────────────────────────────────────
-# SIDEBAR
+# MAIN APPLICATION
 # ─────────────────────────────────────────────────────────────
-def render_sidebar():
-    """Render the sidebar with data upload and global filters."""
-    with st.sidebar:
-        st.markdown("## 📊 WFM Dashboard")
-        st.markdown("---")
 
-        # Data Source Selection
-        st.markdown("### 📁 Data Source")
-        data_source = st.radio(
-            "Choose data source:",
-            ["📎 Upload File", "🧪 Generate Sample Data"],
-            key="data_source",
-            label_visibility="collapsed",
-        )
-
-        if data_source == "📎 Upload File":
-            uploaded_file = st.file_uploader(
-                "Upload CSV or Excel",
-                type=["csv", "xlsx", "xls"],
-                key="file_uploader",
-                help="File must contain: Timestamp, Team, Origin, Record Type, Specialization",
-            )
-
-            if uploaded_file is not None:
-                try:
-                    if uploaded_file.name.endswith(".csv"):
-                        df = pd.read_csv(uploaded_file)
-                    else:
-                        df = pd.read_excel(uploaded_file)
-
-                    valid, message = validate_columns(df)
-                    if not valid:
-                        st.error(f"❌ {message}")
-                        return None
-                    else:
-                        st.success("✅ File loaded successfully!")
-                        df = parse_and_clean(df)
-                        st.session_state["raw_data"] = df
-
-                except Exception as e:
-                    st.error(f"❌ Error reading file: {e}")
-                    return None
-
-        else:
-            st.markdown("#### Sample Data Settings")
-            num_days = st.slider("History (days)", 7, 90, 30, key="syn_days")
-            teams_input = st.text_input(
-                "Teams (comma-separated)",
-                "Support, Sales, Tech",
-                key="syn_teams",
-            )
-            teams = [t.strip() for t in teams_input.split(",") if t.strip()]
-
-            if st.button("🚀 Generate Data", key="generate_btn", use_container_width=True):
-                with st.spinner("Generating synthetic dataset..."):
-                    df = generate_synthetic_data(num_days=num_days, teams=teams)
-                    st.session_state["raw_data"] = df
-                    st.success(f"✅ Generated {len(df):,} records across {num_days} days!")
-
-        st.markdown("---")
-
-        # Global Filters
-        if "raw_data" in st.session_state and st.session_state["raw_data"] is not None:
-            df = st.session_state["raw_data"]
-
-            st.markdown("### 🎯 Global Filters")
-            all_teams = sorted(df["Team"].unique().tolist())
-            selected_teams = st.multiselect(
-                "Filter by Team",
-                options=all_teams,
-                default=all_teams,
-                key="global_team_filter",
-            )
-
-            if selected_teams:
-                st.session_state["filtered_data"] = df[df["Team"].isin(selected_teams)].copy()
-            else:
-                st.session_state["filtered_data"] = df.copy()
-
-            filtered = st.session_state["filtered_data"]
-
-            # Dataset info
-            st.markdown("### ℹ️ Dataset Info")
-            st.markdown(
-                f"""<div class="info-box">
-                📦 <strong>{len(filtered):,}</strong> records<br>
-                📅 {filtered['Timestamp'].min().strftime('%Y-%m-%d')} → {filtered['Timestamp'].max().strftime('%Y-%m-%d')}<br>
-                👥 {filtered['Team'].nunique()} Teams<br>
-                📋 Cases: <strong>{len(filtered[filtered['Origin']=='Case']):,}</strong><br>
-                💬 Chats: <strong>{len(filtered[filtered['Origin']=='Chat']):,}</strong>
-                </div>""",
-                unsafe_allow_html=True,
-            )
-
-            # Download option
-            st.markdown("---")
-            csv = filtered.to_csv(index=False)
-            st.download_button(
-                "⬇️ Download Filtered Data",
-                csv,
-                "wfm_filtered_data.csv",
-                "text/csv",
-                key="download_btn",
-                use_container_width=True,
-            )
-
-            return st.session_state["filtered_data"]
-
-    return None
-
-
-# ─────────────────────────────────────────────────────────────
-# MAIN APP
-# ─────────────────────────────────────────────────────────────
 def main():
-    """Main application entry point."""
-
-    # Initialize session state
-    if "raw_data" not in st.session_state:
-        st.session_state["raw_data"] = None
-    if "filtered_data" not in st.session_state:
-        st.session_state["filtered_data"] = None
-
-    # Render sidebar and get filtered data
-    filtered_data = render_sidebar()
-
-    # Header
+    # ── Header ──
     st.markdown(
         """<div class="main-header">
-            <h1>📊 Volume Arrival & Forecasting Dashboard</h1>
-            <p>Workforce Management Analytics — Multi-Team Channel Analysis & Predictive Modeling</p>
+            <h1>📊 WFM Arrival Pattern, Forecast & Staffing Dashboard</h1>
+            <p>Upload data with a <code>created_at</code> column to analyse hourly arrival patterns,
+            forecast volume, and calculate headcount requirements.</p>
         </div>""",
         unsafe_allow_html=True,
     )
 
-    # No data state
-    if filtered_data is None or filtered_data.empty:
+    # ── Top filters row ──
+    filter_cols = st.columns([2, 2, 2, 2])
+
+    with filter_cols[0]:
+        uploaded_file = st.file_uploader(
+            "Upload Data (CSV / Excel)", type=["csv", "xlsx", "xls"],
+            help="File **must** contain a `created_at` column. Optionally include a `team` column for filtering.",
+        )
+
+    with filter_cols[1]:
+        forecast_model_label = st.selectbox(
+            "Forecasting Model",
+            list(FORECAST_MODELS.keys()),
+            index=0,
+        )
+        forecast_model_key = FORECAST_MODELS[forecast_model_label]
+
+    with filter_cols[2]:
+        staffing_model_label = st.selectbox(
+            "Staffing Model",
+            list(STAFFING_MODELS.keys()),
+            index=0,
+        )
+        staffing_model_key = STAFFING_MODELS[staffing_model_label]
+
+    with filter_cols[3]:
+        team_placeholder = st.empty()
+
+    # ── Staffing parameters (in an expander) ──
+    with st.expander("⚙️ Staffing & Forecast Parameters", expanded=False):
+        pcols = st.columns(5)
+        with pcols[0]:
+            aht_seconds = st.number_input("AHT (seconds)", min_value=10, max_value=7200, value=300, step=10,
+                                          help="Average Handle Time per contact in seconds")
+        with pcols[1]:
+            service_level = st.slider("Service Level Target", 0.50, 1.00, 0.80, 0.01,
+                                      format="%.0f%%",
+                                      help="Target percentage of calls answered within target time")
+        with pcols[2]:
+            target_answer_time = st.number_input("Target Answer Time (s)", min_value=5, max_value=600, value=30, step=5,
+                                                  help="Target time to answer in seconds")
+        with pcols[3]:
+            shrinkage = st.slider("Shrinkage %", 0.0, 0.60, 0.30, 0.01, format="%.0f%%",
+                                  help="Percentage of time agents are unavailable (breaks, training, etc.)")
+        with pcols[4]:
+            utilization = st.slider("Utilization % (productivity model)", 0.40, 1.00, 0.75, 0.01, format="%.0f%%",
+                                    help="Agent productive utilization (only used in Simple Productivity model)")
+
+    # ── Load data ──
+    if uploaded_file is None:
         st.markdown(
-            """<div style="text-align: center; padding: 4rem 2rem;">
-                <div style="font-size: 4rem; margin-bottom: 1rem;">📊</div>
-                <h2 style="color: #E2E8F0; font-weight: 600;">Welcome to the WFM Dashboard</h2>
-                <p style="color: #94A3B8; font-size: 1.1rem; max-width: 500px; margin: 0 auto;">
-                    Upload a CSV/Excel file or generate sample data using the sidebar to get started.
+            """<div style="text-align:center; padding:4rem 2rem;">
+                <div style="font-size:4rem; margin-bottom:1rem;">📂</div>
+                <h2 style="color:#E2E8F0;">Upload your data to get started</h2>
+                <p style="color:#94A3B8; max-width:520px; margin:0 auto;">
+                    Your file must contain a <strong>created_at</strong> column (datetime).
+                    Optionally include a <strong>team</strong> column for filtering.<br><br>
+                    The dashboard will:<br>
+                    1️⃣ Build an hourly volume arrival-pattern table<br>
+                    2️⃣ Forecast future volume using your chosen model<br>
+                    3️⃣ Calculate headcount (HC) required for the forecasted volume
                 </p>
-                <div style="margin-top: 2rem; padding: 1.5rem; background: rgba(59, 130, 246, 0.08);
-                     border-radius: 10px; max-width: 450px; margin-left: auto; margin-right: auto;
-                     border: 1px solid rgba(59, 130, 246, 0.15);">
-                    <p style="color: #94A3B8; font-size: 0.88rem; text-align: left; margin: 0;">
-                        <strong style="color: #E2E8F0;">Required columns:</strong><br>
-                        📅 Timestamp &nbsp; 👥 Team &nbsp; 📋 Origin<br>
-                        🏷️ Record Type &nbsp; 🔧 Specialization
-                    </p>
-                </div>
             </div>""",
             unsafe_allow_html=True,
         )
         return
 
-    # Build tabs
-    teams = sorted(filtered_data["Team"].unique().tolist())
-    tab_names = ["🏠 Master View"] + [f"👥 {team}" for team in teams]
-    tabs = st.tabs(tab_names)
+    df = load_and_validate(uploaded_file)
+    if df is None or df.empty:
+        return
 
-    # ── Master Tab ──
-    with tabs[0]:
-        render_tab_content(filtered_data, "Master", "master")
+    # ── Team filter ──
+    teams = sorted(df["team"].unique().tolist())
+    with filter_cols[3]:
+        if len(teams) > 1:
+            selected_team = st.selectbox("Filter by Team", ["All Teams"] + teams)
+        else:
+            selected_team = "All Teams"
+            st.info(f"Team: {teams[0]}")
 
-    # ── Team Tabs ──
-    for idx, team in enumerate(teams):
-        with tabs[idx + 1]:
-            team_data = filtered_data[filtered_data["Team"] == team].copy()
+    if selected_team != "All Teams":
+        df_filtered = df[df["team"] == selected_team].copy()
+    else:
+        df_filtered = df.copy()
 
-            # Team-specific filters
-            filter_col1, filter_col2 = st.columns(2)
+    if df_filtered.empty:
+        st.warning("No data for the selected team.")
+        return
 
-            with filter_col1:
-                record_types = sorted(team_data["Record Type"].unique().tolist())
-                selected_rt = st.multiselect(
-                    "Filter by Record Type",
-                    options=record_types,
-                    default=record_types,
-                    key=f"team_{team}_rt_filter",
-                )
+    # ── KPI metrics ──
+    total_records = len(df_filtered)
+    date_range_start = df_filtered["created_at"].min().strftime("%Y-%m-%d")
+    date_range_end = df_filtered["created_at"].max().strftime("%Y-%m-%d")
+    n_days = df_filtered["created_at"].dt.date.nunique()
+    avg_daily = total_records / max(n_days, 1)
 
-            with filter_col2:
-                # Cascading filter: specializations based on selected record types
-                if selected_rt:
-                    available_specs = sorted(
-                        team_data[team_data["Record Type"].isin(selected_rt)]["Specialization"]
-                        .unique()
-                        .tolist()
-                    )
-                else:
-                    available_specs = sorted(team_data["Specialization"].unique().tolist())
+    mcols = st.columns(4)
+    kpis = [
+        (f"{total_records:,}", "Total Records"),
+        (f"{n_days}", "Days of Data"),
+        (f"{avg_daily:,.0f}", "Avg Daily Volume"),
+        (f"{date_range_start}  →  {date_range_end}", "Date Range"),
+    ]
+    for col, (val, lbl) in zip(mcols, kpis):
+        col.markdown(
+            f'<div class="metric-card"><div class="metric-value">{val}</div>'
+            f'<div class="metric-label">{lbl}</div></div>',
+            unsafe_allow_html=True,
+        )
 
-                selected_spec = st.multiselect(
-                    "Filter by Specialization",
-                    options=available_specs,
-                    default=available_specs,
-                    key=f"team_{team}_spec_filter",
-                )
+    st.markdown("---")
 
-            # Apply team-specific filters
-            if selected_rt:
-                team_data = team_data[team_data["Record Type"].isin(selected_rt)]
-            if selected_spec:
-                team_data = team_data[team_data["Specialization"].isin(selected_spec)]
+    # ── Build the three core tables ──
+    with st.spinner("Analysing arrival pattern …"):
+        arrival_table = build_arrival_pattern(df_filtered)
+    with st.spinner(f"Forecasting with {forecast_model_label} …"):
+        forecast_table = forecast_arrival_pattern(arrival_table, model_key=forecast_model_key)
+    with st.spinner(f"Calculating HC with {staffing_model_label} …"):
+        hc_table = compute_hc_table(
+            forecast_table,
+            staffing_model=staffing_model_key,
+            aht_seconds=aht_seconds,
+            service_level=service_level,
+            target_answer_time=target_answer_time,
+            shrinkage=shrinkage,
+            utilization=utilization,
+        )
 
-            if team_data.empty:
-                st.warning("No data matches the selected filters.")
-            else:
-                st.markdown(
-                    f"""<div class="info-box">
-                        <strong>{team}</strong> — {len(team_data):,} records |
-                        Record Types: {len(selected_rt)} |
-                        Specializations: {len(selected_spec)}
-                    </div>""",
-                    unsafe_allow_html=True,
-                )
-                render_tab_content(team_data, team, f"team_{team}")
+    # ── Tabs ──
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📋 Arrival Pattern",
+        "🔮 Forecasted Volume",
+        "👥 HC Required",
+        "📈 Visual Insights",
+    ])
+
+    # ────────── TAB 1: Arrival Pattern ──────────
+    with tab1:
+        st.markdown('<div class="section-header">📋 Table 1 — Hourly Volume Arrival Pattern (Average)</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="info-box">Each cell shows the <strong>average number of contacts</strong> '
+            'arriving in that hour on that day of the week, computed from the uploaded data\'s '
+            '<code>created_at</code> column.</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.dataframe(
+            arrival_table.style.format("{:.1f}").background_gradient(cmap="Blues", axis=None),
+            use_container_width=True, height=670,
+        )
+
+        hm1 = heatmap_figure(arrival_table, "Arrival Pattern Heatmap", "Blues")
+        st.plotly_chart(hm1, use_container_width=True, key="hm_arrival")
+
+        col_total = arrival_table.sum()
+        row_total = arrival_table.sum(axis=1)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Daily Totals (avg)**")
+            st.dataframe(col_total.rename("Total").to_frame().T.style.format("{:.0f}"), use_container_width=True)
+        with c2:
+            st.markdown("**Hourly Totals (across all days)**")
+            st.dataframe(row_total.rename("Total").to_frame().style.format("{:.0f}"), use_container_width=True, height=300)
+
+        csv1 = arrival_table.to_csv()
+        st.download_button("⬇️ Download Arrival Pattern CSV", csv1, "arrival_pattern.csv", "text/csv", key="dl_arr")
+
+    # ────────── TAB 2: Forecasted Volume ──────────
+    with tab2:
+        st.markdown(
+            f'<div class="section-header">🔮 Table 2 — Forecasted Volume ({forecast_model_label})</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="info-box">Forecasted hourly volume per day of week using '
+            f'<strong>{forecast_model_label}</strong>. The model is fitted per-day-column on the '
+            f'arrival pattern from Table 1.</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.dataframe(
+            forecast_table.style.format("{:.1f}").background_gradient(cmap="Oranges", axis=None),
+            use_container_width=True, height=670,
+        )
+
+        hm2 = heatmap_figure(forecast_table, "Forecasted Volume Heatmap", "Oranges")
+        st.plotly_chart(hm2, use_container_width=True, key="hm_forecast")
+
+        fc_total = forecast_table.sum()
+        st.markdown("**Forecasted Daily Totals**")
+        st.dataframe(fc_total.rename("Total").to_frame().T.style.format("{:.0f}"), use_container_width=True)
+
+        csv2 = forecast_table.to_csv()
+        st.download_button("⬇️ Download Forecast CSV", csv2, "forecasted_volume.csv", "text/csv", key="dl_fc")
+
+    # ────────── TAB 3: HC Required ──────────
+    with tab3:
+        st.markdown(
+            f'<div class="section-header">👥 Table 3 — Headcount Required ({staffing_model_label})</div>',
+            unsafe_allow_html=True,
+        )
+
+        param_text = (
+            f"AHT: {aht_seconds}s | SL Target: {service_level:.0%} | "
+            f"Answer Time: {target_answer_time}s | Shrinkage: {shrinkage:.0%}"
+        ) if staffing_model_key == "erlang_c" else (
+            f"AHT: {aht_seconds}s | Utilization: {utilization:.0%} | Shrinkage: {shrinkage:.0%}"
+        )
+
+        st.markdown(
+            f'<div class="info-box">Headcount required to handle the forecasted volume using '
+            f'<strong>{staffing_model_label}</strong>.<br>'
+            f'Parameters: {param_text}</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.dataframe(
+            hc_table.style.format("{:.0f}").background_gradient(cmap="Greens", axis=None),
+            use_container_width=True, height=670,
+        )
+
+        hm3 = heatmap_figure(hc_table, "HC Required Heatmap", "Greens")
+        st.plotly_chart(hm3, use_container_width=True, key="hm_hc")
+
+        hc_total = hc_table.sum()
+        hc_peak = hc_table.max()
+        st.markdown("**Daily HC Summary**")
+        summary = pd.DataFrame({"Total HC": hc_total, "Peak HC (single hour)": hc_peak}).T
+        st.dataframe(summary.style.format("{:.0f}"), use_container_width=True)
+
+        csv3 = hc_table.to_csv()
+        st.download_button("⬇️ Download HC Required CSV", csv3, "hc_required.csv", "text/csv", key="dl_hc")
+
+    # ────────── TAB 4: Visual Insights ──────────
+    with tab4:
+        st.markdown('<div class="section-header">📈 Visual Insights</div>', unsafe_allow_html=True)
+
+        # Weekly totals comparison
+        c1, c2 = st.columns(2)
+        with c1:
+            st.plotly_chart(
+                weekly_total_chart(arrival_table, "Average Daily Volume (Arrival Pattern)", COLORS["primary"]),
+                use_container_width=True, key="wk_arr",
+            )
+        with c2:
+            st.plotly_chart(
+                weekly_total_chart(forecast_table, "Forecasted Daily Volume", COLORS["accent"]),
+                use_container_width=True, key="wk_fc",
+            )
+
+        # Day comparison
+        available_days = [d for d in DAY_ORDER if d in arrival_table.columns]
+        if available_days:
+            sel_day = st.selectbox("Compare a specific day", available_days)
+            st.plotly_chart(
+                comparison_bar_chart(arrival_table, forecast_table, sel_day),
+                use_container_width=True, key="cmp_day",
+            )
+
+        # HC line chart
+        st.markdown("**HC Required by Hour (all days overlay)**")
+        fig_hc = go.Figure()
+        day_colors = ["#3B82F6", "#8B5CF6", "#10B981", "#F59E0B", "#EF4444", "#EC4899", "#6366F1"]
+        for i, day in enumerate(available_days):
+            fig_hc.add_trace(go.Scatter(
+                x=hc_table.index, y=hc_table[day],
+                mode="lines+markers", name=day,
+                line=dict(color=day_colors[i % len(day_colors)], width=2),
+                marker=dict(size=5),
+            ))
+        fig_hc.update_layout(
+            title=dict(text="HC Required per Hour (by day)", font=dict(size=14, color=COLORS["text_primary"])),
+            height=420, **PLOTLY_LAYOUT,
+        )
+        st.plotly_chart(fig_hc, use_container_width=True, key="hc_lines")
+
+        # Download all tables as Excel
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            arrival_table.to_excel(writer, sheet_name="Arrival Pattern")
+            forecast_table.to_excel(writer, sheet_name="Forecasted Volume")
+            hc_table.to_excel(writer, sheet_name="HC Required")
+        st.download_button(
+            "⬇️ Download All Tables (Excel)",
+            buf.getvalue(),
+            "wfm_analysis.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_all",
+        )
 
 
 if __name__ == "__main__":
