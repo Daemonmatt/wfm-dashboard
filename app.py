@@ -102,6 +102,31 @@ DAY_ORDER = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "
 HOUR_LABELS = [f"{h:02d}:00" for h in range(24)]
 
 # ─────────────────────────────────────────────────────────────
+# SAMPLE DATA GENERATOR
+# ─────────────────────────────────────────────────────────────
+
+def _generate_sample_data(n: int = 8000, days: int = 90, seed: int = 42) -> pd.DataFrame:
+    """Generate a realistic sample CSV with created_at and team columns."""
+    rng = np.random.RandomState(seed)
+    start = datetime.now() - timedelta(days=days)
+    hour_weights = np.array([1,0.5,0.5,0.5,0.5,1,2,4,6,8,9,8,7,6,7,6,5,4,3,2.5,2,1.5,1,0.5])
+    hour_probs = hour_weights / hour_weights.sum()
+
+    records = []
+    for _ in range(n):
+        day_off = rng.randint(0, days)
+        hour = int(rng.choice(24, p=hour_probs))
+        dt = start + timedelta(days=day_off, hours=hour,
+                               minutes=rng.randint(0, 60),
+                               seconds=rng.randint(0, 60))
+        records.append({
+            "created_at": dt,
+            "team": rng.choice(["Support", "Sales", "Tech"], p=[0.5, 0.3, 0.2]),
+        })
+    return pd.DataFrame(records)
+
+
+# ─────────────────────────────────────────────────────────────
 # DATA LOADING & VALIDATION
 # ─────────────────────────────────────────────────────────────
 
@@ -555,6 +580,18 @@ def main():
             </div>""",
             unsafe_allow_html=True,
         )
+
+        st.markdown("---")
+        st.markdown("**Don't have a file? Download a sample CSV to try the dashboard:**")
+        sample_df = _generate_sample_data()
+        sample_csv = sample_df.to_csv(index=False)
+        st.download_button(
+            "⬇️ Download Sample CSV (8,000 rows)",
+            sample_csv, "sample_wfm_data.csv", "text/csv",
+            key="dl_sample",
+        )
+        with st.expander("Preview sample data"):
+            st.dataframe(sample_df.head(20), use_container_width=True)
         return
 
     df = load_and_validate(uploaded_file)
