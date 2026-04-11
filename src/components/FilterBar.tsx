@@ -21,10 +21,10 @@ interface FilterBarProps {
 }
 
 const selectClass =
-  "h-8 rounded-md border border-zinc-200 bg-white px-2.5 text-xs text-zinc-700 shadow-sm transition-colors hover:border-zinc-300 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500/30 disabled:opacity-40 disabled:cursor-not-allowed dark:border-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-300 dark:hover:border-zinc-600";
+  "h-8 rounded border border-slate-200 bg-white px-2.5 text-xs text-slate-700 transition-colors hover:border-slate-300 focus:border-[#2563eb] focus:outline-none focus:ring-1 focus:ring-[#2563eb]/25 disabled:opacity-40 disabled:cursor-not-allowed dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-slate-500";
 
 const inputClass =
-  "h-8 w-[4.5rem] rounded-md border border-zinc-200 bg-white px-2 text-xs text-zinc-700 shadow-sm text-center transition-colors hover:border-zinc-300 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500/30 disabled:opacity-40 disabled:cursor-not-allowed dark:border-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-300 dark:hover:border-zinc-600";
+  "h-8 w-[4.5rem] rounded border border-slate-200 bg-white px-2 text-xs text-slate-700 text-center transition-colors hover:border-slate-300 focus:border-[#2563eb] focus:outline-none focus:ring-1 focus:ring-[#2563eb]/25 disabled:opacity-40 disabled:cursor-not-allowed dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-slate-500";
 
 export default function FilterBar({
   teams,
@@ -108,7 +108,7 @@ export default function FilterBar({
               value={staffingParams.concurrency}
               onChange={(e) => onStaffingParamsChange({ ...staffingParams, concurrency: Number(e.target.value) })}
               disabled={disabled}
-              className={selectClass.replace("border-zinc-200", "border-blue-300").replace("dark:border-zinc-700", "dark:border-blue-700")}
+              className={selectClass.replace("border-slate-200", "border-[#2563eb]/40").replace("dark:border-slate-600", "dark:border-blue-700")}
             >
               {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
                 <option key={n} value={n}>{n}</option>
@@ -124,14 +124,14 @@ export default function FilterBar({
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">{label}</span>
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">{label}</span>
       {children}
     </div>
   );
 }
 
 function Divider() {
-  return <div className="hidden sm:block h-5 w-px bg-zinc-200 dark:bg-zinc-700 self-center" />;
+  return <div className="hidden sm:block h-5 w-px bg-slate-200 dark:bg-slate-700 self-center" />;
 }
 
 function NumField({
@@ -162,7 +162,7 @@ function NumField({
 
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
         {label}
       </span>
       <input

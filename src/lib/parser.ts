@@ -2,6 +2,8 @@ export interface ParsedRow {
   created_at: Date;
   /** Hour (0-23) extracted directly from the created_at string in its original timezone */
   hour: number;
+  /** Minute (0-59) extracted directly from the created_at string in its original timezone */
+  minute: number;
   /** Day of week (0=Sun, 6=Sat) extracted directly from the created_at string in its original timezone */
   dayOfWeek: number;
   /** ISO date (YYYY-MM-DD) in the original timezone, used for week bucketing */
@@ -21,46 +23,42 @@ export interface ParseResult {
 interface TimestampParts {
   date: Date;
   hour: number;
-  localDate: string; // YYYY-MM-DD in original timezone
+  minute: number;
+  localDate: string;
 }
 
 /**
- * Extract hour and date directly from the raw value's string representation
+ * Extract hour, minute and date directly from the raw value's string representation
  * so we always use the source timezone, never the browser's local timezone.
  */
 function parseTimestamp(value: unknown): TimestampParts | null {
   const raw = value instanceof Date ? value.toISOString() : String(value ?? "");
 
-  // Match ISO 8601: YYYY-MM-DDTHH:MM:SS (with optional timezone offset)
   const isoMatch = raw.match(/(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/);
   if (isoMatch) {
     const localDate = isoMatch[1];
     const hour = parseInt(isoMatch[2], 10);
+    const minute = parseInt(isoMatch[3], 10);
     const d = new Date(raw);
     if (!isNaN(d.getTime())) {
-      return { date: d, hour, localDate };
+      return { date: d, hour, minute, localDate };
     }
   }
 
-  // Excel serial date number
   if (typeof value === "number") {
     const excelEpoch = new Date(1899, 11, 30);
     const d = new Date(excelEpoch.getTime() + value * 86400000);
     const localDate = d.toISOString().slice(0, 10);
     const hour = d.getUTCHours();
-    return { date: d, hour, localDate };
+    const minute = d.getUTCMinutes();
+    return { date: d, hour, minute, localDate };
   }
 
   return null;
 }
 
-/**
- * Compute day-of-week (0=Sun..6=Sat) from a YYYY-MM-DD string
- * using calendar math -- no Date timezone involved.
- */
 function dayOfWeekFromDate(dateStr: string): number {
   const [y, m, d] = dateStr.split("-").map(Number);
-  // Tomohiko Sakamoto's algorithm
   const t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
   const yr = m < 3 ? y - 1 : y;
   return (yr + Math.floor(yr / 4) - Math.floor(yr / 100) + Math.floor(yr / 400) + t[m - 1] + d) % 7;
@@ -137,6 +135,7 @@ export async function parseFile(
     rows.push({
       created_at: parts.date,
       hour: parts.hour,
+      minute: parts.minute,
       dayOfWeek: dow,
       localDate: parts.localDate,
       team,

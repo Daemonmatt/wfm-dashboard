@@ -21,7 +21,7 @@ export const FORECAST_MODELS: { id: ForecastModel; label: string; description: s
   {
     id: "linear_regression",
     label: "Linear Regression Trend",
-    description: "Fits a least-squares trend line per hour/day slot and extrapolates",
+    description: "Fits a least-squares trend line per slot/day and extrapolates",
   },
   {
     id: "double_exp",
@@ -30,6 +30,11 @@ export const FORECAST_MODELS: { id: ForecastModel; label: string; description: s
   },
 ];
 
+function getSlotCount(weeklyBreakdown: WeeklyBreakdown): number {
+  const first = Object.values(weeklyBreakdown)[0];
+  return first ? first.length : 24;
+}
+
 function simpleMovingAverage(arrivalMatrix: ArrivalMatrix): ArrivalMatrix {
   return arrivalMatrix.map((row) => [...row]);
 }
@@ -37,36 +42,38 @@ function simpleMovingAverage(arrivalMatrix: ArrivalMatrix): ArrivalMatrix {
 function weightedMovingAverage(weeklyBreakdown: WeeklyBreakdown): ArrivalMatrix {
   const weeks = Object.keys(weeklyBreakdown).sort();
   const n = weeks.length;
-  if (n === 0) return Array.from({ length: 24 }, () => Array(7).fill(0));
+  const SLOTS = getSlotCount(weeklyBreakdown);
+  if (n === 0) return Array.from({ length: SLOTS }, () => Array(7).fill(0));
 
   const alpha = 0.3;
   const rawWeights = weeks.map((_, i) => Math.pow(1 - alpha, n - 1 - i));
   const weightSum = rawWeights.reduce((a, b) => a + b, 0);
   const weights = rawWeights.map((w) => w / weightSum);
 
-  const result: ArrivalMatrix = Array.from({ length: 24 }, () => Array(7).fill(0));
+  const result: ArrivalMatrix = Array.from({ length: SLOTS }, () => Array(7).fill(0));
   for (let wi = 0; wi < n; wi++) {
     const wd = weeklyBreakdown[weeks[wi]];
-    for (let h = 0; h < 24; h++) {
+    for (let h = 0; h < SLOTS; h++) {
       for (let d = 0; d < 7; d++) {
         result[h][d] += wd[h][d] * weights[wi];
       }
     }
   }
-  for (let h = 0; h < 24; h++) for (let d = 0; d < 7; d++) result[h][d] = Math.round(result[h][d]);
+  for (let h = 0; h < SLOTS; h++) for (let d = 0; d < 7; d++) result[h][d] = Math.round(result[h][d]);
   return result;
 }
 
 function holtWinters(weeklyBreakdown: WeeklyBreakdown): ArrivalMatrix {
   const weeks = Object.keys(weeklyBreakdown).sort();
   const n = weeks.length;
-  if (n === 0) return Array.from({ length: 24 }, () => Array(7).fill(0));
+  const SLOTS = getSlotCount(weeklyBreakdown);
+  if (n === 0) return Array.from({ length: SLOTS }, () => Array(7).fill(0));
 
-  const result: ArrivalMatrix = Array.from({ length: 24 }, () => Array(7).fill(0));
+  const result: ArrivalMatrix = Array.from({ length: SLOTS }, () => Array(7).fill(0));
   const SEASON = 7;
   const alphaHW = 0.3, beta = 0.1, gamma = 0.3;
 
-  for (let h = 0; h < 24; h++) {
+  for (let h = 0; h < SLOTS; h++) {
     const series: number[] = [];
     for (const wk of weeks) for (let d = 0; d < 7; d++) series.push(weeklyBreakdown[wk][h][d]);
 
@@ -106,18 +113,15 @@ function holtWinters(weeklyBreakdown: WeeklyBreakdown): ArrivalMatrix {
   return result;
 }
 
-/**
- * Linear Regression Trend: for each (hour, day) slot, fit a least-squares
- * line through the weekly values and extrapolate one step ahead.
- */
 function linearRegression(weeklyBreakdown: WeeklyBreakdown): ArrivalMatrix {
   const weeks = Object.keys(weeklyBreakdown).sort();
   const n = weeks.length;
-  if (n === 0) return Array.from({ length: 24 }, () => Array(7).fill(0));
+  const SLOTS = getSlotCount(weeklyBreakdown);
+  if (n === 0) return Array.from({ length: SLOTS }, () => Array(7).fill(0));
 
-  const result: ArrivalMatrix = Array.from({ length: 24 }, () => Array(7).fill(0));
+  const result: ArrivalMatrix = Array.from({ length: SLOTS }, () => Array(7).fill(0));
 
-  for (let h = 0; h < 24; h++) {
+  for (let h = 0; h < SLOTS; h++) {
     for (let d = 0; d < 7; d++) {
       const ys = weeks.map((wk) => weeklyBreakdown[wk][h][d]);
       const xMean = (n - 1) / 2;
@@ -136,22 +140,18 @@ function linearRegression(weeklyBreakdown: WeeklyBreakdown): ArrivalMatrix {
   return result;
 }
 
-/**
- * Double Exponential Smoothing (Holt's method): tracks level + trend
- * without seasonality. Applied per (hour, day) slot across weeks.
- */
 function doubleExponentialSmoothing(weeklyBreakdown: WeeklyBreakdown): ArrivalMatrix {
   const weeks = Object.keys(weeklyBreakdown).sort();
   const n = weeks.length;
-  if (n === 0) return Array.from({ length: 24 }, () => Array(7).fill(0));
+  const SLOTS = getSlotCount(weeklyBreakdown);
+  if (n === 0) return Array.from({ length: SLOTS }, () => Array(7).fill(0));
 
   const alpha = 0.3, beta = 0.2;
-  const result: ArrivalMatrix = Array.from({ length: 24 }, () => Array(7).fill(0));
+  const result: ArrivalMatrix = Array.from({ length: SLOTS }, () => Array(7).fill(0));
 
-  for (let h = 0; h < 24; h++) {
+  for (let h = 0; h < SLOTS; h++) {
     for (let d = 0; d < 7; d++) {
       const ys = weeks.map((wk) => weeklyBreakdown[wk][h][d]);
-
       let level = ys[0];
       let trend = n >= 2 ? ys[1] - ys[0] : 0;
 
@@ -160,7 +160,6 @@ function doubleExponentialSmoothing(weeklyBreakdown: WeeklyBreakdown): ArrivalMa
         level = alpha * ys[i] + (1 - alpha) * (prevLevel + trend);
         trend = beta * (level - prevLevel) + (1 - beta) * trend;
       }
-
       result[h][d] = Math.max(0, Math.round(level + trend));
     }
   }

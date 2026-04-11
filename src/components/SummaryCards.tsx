@@ -44,30 +44,34 @@ export default function SummaryCards({
   const colPeaks = getColPeaks(staffingMatrix);
   const overallPeakHC = Math.max(...colPeaks);
 
-  const cards: { label: string; value: string; sub: string; accent: string }[] = [
+  const cards: { label: string; value: string; sub: string; accent: string; border: string }[] = [
     {
       label: "Total Records",
       value: totalRecords.toLocaleString(),
       sub: `${weekCount} weeks of data`,
-      accent: "text-zinc-900 dark:text-zinc-100",
+      accent: "text-slate-800 dark:text-slate-100",
+      border: "border-l-slate-400 dark:border-l-slate-500",
     },
     {
       label: "Avg Weekly Volume",
       value: arrivalTotal.toLocaleString(),
       sub: `Peak ${formatHour(peakArrival.hour)} ${DAY_NAMES[peakArrival.day]?.slice(0, 3)}`,
-      accent: "text-blue-600 dark:text-blue-400",
+      accent: "text-[#2563eb] dark:text-blue-400",
+      border: "border-l-[#2563eb] dark:border-l-blue-400",
     },
     {
       label: "Forecasted Volume",
       value: forecastTotal.toLocaleString(),
       sub: `${Number(delta) >= 0 ? "+" : ""}${delta}% vs actual`,
-      accent: "text-emerald-600 dark:text-emerald-400",
+      accent: "text-[#0d9488] dark:text-teal-400",
+      border: "border-l-[#0d9488] dark:border-l-teal-400",
     },
     {
       label: "Peak HC Required",
       value: overallPeakHC.toLocaleString(),
       sub: `At ${formatHour(peakStaffingCell.hour)} ${DAY_NAMES[peakStaffingCell.day]?.slice(0, 3)}`,
-      accent: "text-amber-600 dark:text-amber-400",
+      accent: "text-[#c2410c] dark:text-orange-400",
+      border: "border-l-[#c2410c] dark:border-l-orange-400",
     },
   ];
 
@@ -76,13 +80,13 @@ export default function SummaryCards({
       {cards.map((c) => (
         <div
           key={c.label}
-          className="rounded-lg border border-zinc-200/80 bg-white p-3.5 dark:border-zinc-800 dark:bg-zinc-900"
+          className={`rounded-lg border border-slate-200 bg-white p-3.5 dark:border-slate-700 dark:bg-slate-900 border-l-[3px] ${c.border}`}
         >
-          <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500 mb-1">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-1">
             {c.label}
           </p>
           <p className={`text-xl font-semibold tabular-nums ${c.accent}`}>{c.value}</p>
-          <p className="text-[11px] text-zinc-400 dark:text-zinc-500 mt-0.5">{c.sub}</p>
+          <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">{c.sub}</p>
         </div>
       ))}
     </div>
