@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrivalMatrix, DAY_NAMES, formatHour, getMatrixMax } from "@/lib/arrival";
+import { ArrivalMatrix, DAY_NAMES, formatHour } from "@/lib/arrival";
 
 interface SummaryCardsProps {
   arrivalMatrix: ArrivalMatrix;
@@ -24,6 +24,10 @@ function getPeakCell(m: ArrivalMatrix): { hour: number; day: number; value: numb
   return best;
 }
 
+function getColPeaks(m: ArrivalMatrix): number[] {
+  return DAY_NAMES.map((_, di) => Math.max(...m.map((row) => row[di])));
+}
+
 export default function SummaryCards({
   arrivalMatrix,
   forecastMatrix,
@@ -33,10 +37,12 @@ export default function SummaryCards({
 }: SummaryCardsProps) {
   const arrivalTotal = getMatrixTotal(arrivalMatrix);
   const forecastTotal = getMatrixTotal(forecastMatrix);
-  const staffingTotal = getMatrixTotal(staffingMatrix);
   const peakArrival = getPeakCell(arrivalMatrix);
-  const peakStaffing = getMatrixMax(staffingMatrix);
+  const peakStaffingCell = getPeakCell(staffingMatrix);
   const delta = arrivalTotal > 0 ? ((forecastTotal - arrivalTotal) / arrivalTotal * 100).toFixed(1) : "0.0";
+
+  const colPeaks = getColPeaks(staffingMatrix);
+  const overallPeakHC = Math.max(...colPeaks);
 
   const cards: { label: string; value: string; sub: string; accent: string }[] = [
     {
@@ -58,9 +64,9 @@ export default function SummaryCards({
       accent: "text-emerald-600 dark:text-emerald-400",
     },
     {
-      label: "Total HC Required",
-      value: staffingTotal.toLocaleString(),
-      sub: `Peak ${peakStaffing} agents/hr`,
+      label: "Peak HC Required",
+      value: overallPeakHC.toLocaleString(),
+      sub: `At ${formatHour(peakStaffingCell.hour)} ${DAY_NAMES[peakStaffingCell.day]?.slice(0, 3)}`,
       accent: "text-amber-600 dark:text-amber-400",
     },
   ];

@@ -199,6 +199,7 @@ export default function Home() {
                 subtitle={`${activeStaffingLabel} (AHT ${staffingParams.ahtSeconds}s, SL ${Math.round(staffingParams.serviceLevelPct * 100)}%, Shrink ${Math.round(staffingParams.shrinkagePct * 100)}%${concLabel})${filterLabel}`}
                 matrix={staffingMatrix}
                 colorScheme="amber"
+                usePeakTotals
               />
             </div>
           </div>

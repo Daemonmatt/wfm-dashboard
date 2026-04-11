@@ -14,6 +14,8 @@ interface ArrivalTableProps {
   matrix: ArrivalMatrix;
   colorScheme: "blue" | "emerald" | "amber";
   valueFormatter?: (v: number) => string;
+  /** When true, show Peak (max) instead of Sum in totals row/column — used for HC table */
+  usePeakTotals?: boolean;
 }
 
 const SCHEMES = {
@@ -73,20 +75,33 @@ export default function ArrivalTable({
   matrix,
   colorScheme,
   valueFormatter = (v) => v.toLocaleString(),
+  usePeakTotals = false,
 }: ArrivalTableProps) {
   const maxVal = getMatrixMax(matrix);
   const s = SCHEMES[colorScheme];
 
-  const totalWeekly = matrix.reduce((sum, row) => sum + row.reduce((a, v) => a + v, 0), 0);
-  const rowTotals = matrix.map((row) => row.reduce((a, v) => a + v, 0));
-  const colTotals = DAY_NAMES.map((_, di) => matrix.reduce((sum, row) => sum + row[di], 0));
-  const peakHour = rowTotals.indexOf(Math.max(...rowTotals));
-  const peakDay = colTotals.indexOf(Math.max(...colTotals));
+  const rowSums = matrix.map((row) => row.reduce((a, v) => a + v, 0));
+  const colSums = DAY_NAMES.map((_, di) => matrix.reduce((sum, row) => sum + row[di], 0));
+
+  const rowPeaks = matrix.map((row) => Math.max(...row));
+  const colPeaks = DAY_NAMES.map((_, di) => Math.max(...matrix.map((row) => row[di])));
+
+  const rowTotals = usePeakTotals ? rowPeaks : rowSums;
+  const colTotals = usePeakTotals ? colPeaks : colSums;
+  const grandTotal = usePeakTotals
+    ? Math.max(...colPeaks)
+    : matrix.reduce((sum, row) => sum + row.reduce((a, v) => a + v, 0), 0);
+  const totalWeekly = grandTotal;
+
+  const peakHour = rowSums.indexOf(Math.max(...rowSums));
+  const peakDay = colSums.indexOf(Math.max(...colSums));
+
+  const totalsLabel = usePeakTotals ? "Peak" : "Total";
 
   const handleExportCSV = useCallback(() => {
-    const header = ["Hour", ...DAY_NAMES, "Total"].join(",");
+    const header = ["Hour", ...DAY_NAMES, totalsLabel].join(",");
     const rows = matrix.map((row, hi) => [formatHour(hi), ...row, rowTotals[hi]].join(","));
-    const totalsRow = ["Total", ...colTotals, totalWeekly].join(",");
+    const totalsRow = [totalsLabel, ...colTotals, grandTotal].join(",");
     const csv = [header, ...rows, totalsRow].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -113,7 +128,7 @@ export default function ArrivalTable({
             Peak {formatHour(peakHour)} {DAY_NAMES[peakDay]?.slice(0, 3)}
           </span>
           <span className={`rounded-md px-2 py-0.5 text-[10px] font-medium ${s.badge}`}>
-            {totalWeekly.toLocaleString()}
+            {usePeakTotals ? "Peak" : "Total"}: {grandTotal.toLocaleString()}
           </span>
           <button
             onClick={handleExportCSV}
@@ -141,7 +156,7 @@ export default function ArrivalTable({
                 </th>
               ))}
               <th className="px-2.5 py-2 text-center text-[10px] font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400 whitespace-nowrap border-l border-zinc-100 dark:border-zinc-800">
-                Total
+                {totalsLabel}
               </th>
             </tr>
           </thead>
@@ -166,7 +181,7 @@ export default function ArrivalTable({
             ))}
             <tr className="bg-zinc-50 dark:bg-zinc-800/60">
               <td className="sticky left-0 z-10 bg-zinc-50 dark:bg-zinc-800/60 px-2.5 py-2 text-[10px] font-semibold uppercase text-zinc-500 dark:text-zinc-400 border-r border-zinc-100 dark:border-zinc-800">
-                Total
+                {totalsLabel}
               </td>
               {colTotals.map((total, di) => (
                 <td key={di} className="px-2.5 py-2 text-center text-[11px] font-semibold text-zinc-600 dark:text-zinc-300 tabular-nums">
@@ -174,7 +189,7 @@ export default function ArrivalTable({
                 </td>
               ))}
               <td className="px-2.5 py-2 text-center text-[11px] font-bold text-zinc-800 dark:text-zinc-100 tabular-nums border-l border-zinc-100 dark:border-zinc-800">
-                {valueFormatter(totalWeekly)}
+                {valueFormatter(grandTotal)}
               </td>
             </tr>
           </tbody>
