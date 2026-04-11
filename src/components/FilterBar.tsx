@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { ForecastModel, FORECAST_MODELS } from "@/lib/forecast";
 import { StaffingModel, STAFFING_MODELS, StaffingParams } from "@/lib/staffing";
 
@@ -44,7 +45,6 @@ export default function FilterBar({
 
   return (
     <div className="flex flex-wrap items-end gap-2.5">
-      {/* -- Filters -- */}
       <Field label="Team">
         <select value={selectedTeam} onChange={(e) => onTeamChange(e.target.value)} disabled={disabled} className={selectClass}>
           <option value="__all__">All Teams</option>
@@ -61,7 +61,6 @@ export default function FilterBar({
 
       <Divider />
 
-      {/* -- Models -- */}
       <Field label="Forecast">
         <select value={forecastModel} onChange={(e) => onForecastModelChange(e.target.value as ForecastModel)} disabled={disabled} className={selectClass}>
           {FORECAST_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
@@ -76,13 +75,31 @@ export default function FilterBar({
 
       <Divider />
 
-      {/* -- Staffing params -- */}
-      <NumField label="AHT (min)" value={staffingParams.ahtMinutes} onChange={(v) => onStaffingParamsChange({ ...staffingParams, ahtMinutes: v })} min={1} max={120} step={1} disabled={disabled} />
-      <NumField label="SL %" value={Math.round(staffingParams.serviceLevelPct * 100)} onChange={(v) => onStaffingParamsChange({ ...staffingParams, serviceLevelPct: v / 100 })} min={50} max={100} step={5} disabled={disabled} />
-      <NumField label="TAT (s)" value={staffingParams.targetAnswerTimeSec} onChange={(v) => onStaffingParamsChange({ ...staffingParams, targetAnswerTimeSec: v })} min={10} max={600} step={10} disabled={disabled} />
-      <NumField label="Shrink %" value={Math.round(staffingParams.shrinkagePct * 100)} onChange={(v) => onStaffingParamsChange({ ...staffingParams, shrinkagePct: v / 100 })} min={0} max={60} step={5} disabled={disabled} />
+      <NumField
+        label="AHT (sec)"
+        value={staffingParams.ahtSeconds}
+        onCommit={(v) => onStaffingParamsChange({ ...staffingParams, ahtSeconds: v })}
+        disabled={disabled}
+      />
+      <NumField
+        label="SL %"
+        value={Math.round(staffingParams.serviceLevelPct * 100)}
+        onCommit={(v) => onStaffingParamsChange({ ...staffingParams, serviceLevelPct: v / 100 })}
+        disabled={disabled}
+      />
+      <NumField
+        label="TAT (sec)"
+        value={staffingParams.targetAnswerTimeSec}
+        onCommit={(v) => onStaffingParamsChange({ ...staffingParams, targetAnswerTimeSec: v })}
+        disabled={disabled}
+      />
+      <NumField
+        label="Shrink %"
+        value={Math.round(staffingParams.shrinkagePct * 100)}
+        onCommit={(v) => onStaffingParamsChange({ ...staffingParams, shrinkagePct: v / 100 })}
+        disabled={disabled}
+      />
 
-      {/* Concurrency -- only shown when Chat origin is selected */}
       {isChat && (
         <>
           <Divider />
@@ -120,41 +137,43 @@ function Divider() {
 function NumField({
   label,
   value,
-  onChange,
-  min,
-  max,
-  step,
+  onCommit,
   disabled,
-  highlight,
 }: {
   label: string;
   value: number;
-  onChange: (v: number) => void;
-  min: number;
-  max: number;
-  step: number;
+  onCommit: (v: number) => void;
   disabled: boolean;
-  highlight?: boolean;
 }) {
+  const [local, setLocal] = useState(String(value));
+
+  useEffect(() => {
+    setLocal(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const n = Number(local);
+    if (!isNaN(n) && n >= 0) {
+      onCommit(n);
+    } else {
+      setLocal(String(value));
+    }
+  };
+
   return (
     <div className="flex flex-col gap-1">
-      <span className={`text-[10px] font-medium uppercase tracking-wider ${highlight ? "text-blue-500 dark:text-blue-400" : "text-zinc-400 dark:text-zinc-500"}`}>
+      <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
         {label}
       </span>
       <input
-        type="number"
-        value={value}
-        onChange={(e) => {
-          const n = Number(e.target.value);
-          if (!isNaN(n) && n >= min && n <= max) onChange(n);
-        }}
-        min={min}
-        max={max}
-        step={step}
+        type="text"
+        inputMode="numeric"
+        value={local}
+        onChange={(e) => setLocal(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
         disabled={disabled}
-        className={highlight
-          ? inputClass.replace("border-zinc-200", "border-blue-300").replace("dark:border-zinc-700", "dark:border-blue-700")
-          : inputClass}
+        className={inputClass}
       />
     </div>
   );

@@ -196,7 +196,7 @@ export default function Home() {
               />
               <ArrivalTable
                 title="Headcount Required"
-                subtitle={`${activeStaffingLabel} (AHT ${staffingParams.ahtMinutes}m, SL ${Math.round(staffingParams.serviceLevelPct * 100)}%, Shrink ${Math.round(staffingParams.shrinkagePct * 100)}%${concLabel})${filterLabel}`}
+                subtitle={`${activeStaffingLabel} (AHT ${staffingParams.ahtSeconds}s, SL ${Math.round(staffingParams.serviceLevelPct * 100)}%, Shrink ${Math.round(staffingParams.shrinkagePct * 100)}%${concLabel})${filterLabel}`}
                 matrix={staffingMatrix}
                 colorScheme="amber"
               />
