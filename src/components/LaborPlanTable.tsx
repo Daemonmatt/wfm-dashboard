@@ -12,8 +12,8 @@ interface LaborPlanTableProps {
   forecastDates?: string[];
 }
 
-const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
-const DAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAY_ORDER = [0, 1, 2, 3, 4, 5, 6];
+const DAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function formatSlotAmPm(slot: number): string {
   const h24 = Math.floor(slot / 4);
