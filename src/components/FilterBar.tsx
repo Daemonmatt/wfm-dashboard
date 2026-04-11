@@ -107,7 +107,6 @@ export default function FilterBar({
       <NumField label="TAT (s)" value={staffingParams.targetAnswerTimeSec} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, targetAnswerTimeSec: v })} disabled={disabled} />
       <NumField label="Shrink %" value={Math.round(staffingParams.shrinkagePct * 100)} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, shrinkagePct: v / 100 })} disabled={disabled} />
       <NumField label="Occ %" value={Math.round(staffingParams.occupancyPct * 100)} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, occupancyPct: v / 100 })} disabled={disabled} />
-      <NumField label="Util %" value={Math.round(staffingParams.utilizationPct * 100)} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, utilizationPct: v / 100 })} disabled={disabled} />
     </div>
   );
 }

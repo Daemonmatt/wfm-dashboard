@@ -1,6 +1,6 @@
 import { ArrivalMatrix } from "./arrival";
 
-export type StaffingModel = "erlang_c" | "erlang_a" | "simple_ratio" | "occupancy" | "production_rate" | "workload";
+export type StaffingModel = "erlang_c" | "erlang_a" | "simple_ratio" | "occupancy" | "production_rate" | "workload" | "workload_spread";
 
 export const STAFFING_MODELS: {
   id: StaffingModel;
@@ -35,7 +35,12 @@ export const STAFFING_MODELS: {
   {
     id: "workload",
     label: "Workload",
-    description: "HC = (volume × AHT) / (interval × utilization × (1 − shrinkage))",
+    description: "HC = ⌈(volume × AHT) / (interval × occupancy)⌉ / (1 − shrinkage)",
+  },
+  {
+    id: "workload_spread",
+    label: "Workload Spread",
+    description: "Spreads email workload forward across intervals when AHT > interval, then calculates FTE",
   },
 ];
 
@@ -47,7 +52,6 @@ export interface StaffingParams {
   targetAnswerTimeSec: number;
   shrinkagePct: number;
   occupancyPct: number;
-  utilizationPct: number;
   intervalMinutes: number;
   concurrency: number;
 }
@@ -60,7 +64,6 @@ export const DEFAULT_STAFFING_PARAMS: StaffingParams = {
   targetAnswerTimeSec: 60,
   shrinkagePct: 0.3,
   occupancyPct: 0.85,
-  utilizationPct: 0.85,
   intervalMinutes: 60,
   concurrency: 1,
 };
@@ -164,10 +167,65 @@ function workloadAgents(volume: number, p: StaffingParams): number {
   if (volume <= 0) return 0;
   const aht = p.ahtSeconds;
   const interval = p.intervalMinutes * 60;
-  const util = p.utilizationPct > 0 ? p.utilizationPct : 0.85;
-  const shrink = p.shrinkagePct;
-  const raw = (volume * aht) / (interval * util * (1 - shrink));
-  return Math.ceil(raw);
+  const occ = p.occupancyPct > 0 ? p.occupancyPct : 0.85;
+  const rawBeforeShrink = (volume * aht) / (interval * occ);
+  return Math.ceil(rawBeforeShrink / (1 - p.shrinkagePct));
+}
+
+/**
+ * Workload Spread: distributes email work forward across intervals when AHT
+ * exceeds the interval length. Operates per-day across all slots.
+ *
+ * For each slot where emails arrive:
+ *   total_work = volume × AHT (seconds)
+ *   spread that work across ceil(AHT / interval) consecutive slots,
+ *   proportional to how much time falls in each slot.
+ *
+ * After spreading, convert cumulative workload per slot to HC:
+ *   HC = ceil( spread_work / (interval × occupancy) / (1 − shrinkage) )
+ */
+function calculateWorkloadSpread(
+  forecastMatrix: ArrivalMatrix,
+  params: StaffingParams,
+): ArrivalMatrix {
+  const slots = forecastMatrix.length;
+  const intervalSec = params.intervalMinutes * 60;
+  const aht = params.ahtSeconds;
+  const occ = params.occupancyPct > 0 ? params.occupancyPct : 0.85;
+  const shrink = params.shrinkagePct;
+
+  const result: ArrivalMatrix = Array.from({ length: slots }, () => Array(7).fill(0));
+
+  for (let d = 0; d < 7; d++) {
+    const spreadWork = new Array(slots).fill(0);
+
+    for (let s = 0; s < slots; s++) {
+      const vol = forecastMatrix[s][d];
+      if (vol <= 0) continue;
+
+      const totalWork = vol * aht;
+      let remaining = totalWork;
+      let target = s;
+
+      while (remaining > 0 && target < slots) {
+        const chunk = Math.min(remaining, intervalSec);
+        spreadWork[target] += chunk;
+        remaining -= chunk;
+        target++;
+      }
+    }
+
+    for (let s = 0; s < slots; s++) {
+      if (spreadWork[s] <= 0) {
+        result[s][d] = 0;
+        continue;
+      }
+      const rawFte = spreadWork[s] / (intervalSec * occ);
+      result[s][d] = Math.ceil(rawFte / (1 - shrink));
+    }
+  }
+
+  return result;
 }
 
 const MODEL_FNS: Record<StaffingModel, (v: number, p: StaffingParams) => number> = {
@@ -177,6 +235,7 @@ const MODEL_FNS: Record<StaffingModel, (v: number, p: StaffingParams) => number>
   occupancy: occupancyAgents,
   production_rate: productionRateAgents,
   workload: workloadAgents,
+  workload_spread: workloadAgents,
 };
 
 export function calculateStaffing(
@@ -185,6 +244,10 @@ export function calculateStaffing(
   params: StaffingParams,
   applyConcurrency: boolean
 ): ArrivalMatrix {
+  if (model === "workload_spread") {
+    return calculateWorkloadSpread(forecastMatrix, params);
+  }
+
   const calcFn = MODEL_FNS[model];
   const conc = applyConcurrency && params.concurrency > 1 ? params.concurrency : 1;
 
@@ -194,4 +257,34 @@ export function calculateStaffing(
       return conc > 1 ? Math.ceil(raw / conc) : raw;
     })
   );
+}
+
+/**
+ * Blended staffing: runs Erlang-C on chat forecast + Workload Spread on email forecast,
+ * then sums cell-by-cell. Used when "All Origins" is selected.
+ */
+export function calculateBlendedStaffing(
+  chatForecast: ArrivalMatrix,
+  emailForecast: ArrivalMatrix,
+  params: StaffingParams,
+  chatAhtSeconds: number,
+  emailAhtSeconds: number,
+): ArrivalMatrix {
+  const chatP = { ...params, ahtSeconds: chatAhtSeconds };
+  const emailP = { ...params, ahtSeconds: emailAhtSeconds };
+  const conc = params.concurrency > 1 ? params.concurrency : 1;
+
+  const emailSpread = calculateWorkloadSpread(emailForecast, emailP);
+
+  const slots = chatForecast.length;
+  const result: ArrivalMatrix = Array.from({ length: slots }, () => Array(7).fill(0));
+
+  for (let s = 0; s < slots; s++) {
+    for (let d = 0; d < 7; d++) {
+      const chatRaw = erlangCAgents(chatForecast[s][d], chatP);
+      const chatHc = conc > 1 ? Math.ceil(chatRaw / conc) : chatRaw;
+      result[s][d] = chatHc + emailSpread[s][d];
+    }
+  }
+  return result;
 }

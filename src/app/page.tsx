@@ -8,11 +8,12 @@ import DistributionTable from "@/components/DistributionTable";
 import SummaryCards from "@/components/SummaryCards";
 import LaborPlanTable from "@/components/LaborPlanTable";
 import { parseFile, ParseResult } from "@/lib/parser";
-import { computeArrivalPattern, computeArrivalPattern15, formatHour, formatSlot, getForecastWeekDates, getForecastWeekDatesLong } from "@/lib/arrival";
+import { computeArrivalPattern, computeArrivalPattern15, formatHour, formatSlot, getMatrixTotal, getForecastWeekDates, getForecastWeekDatesLong } from "@/lib/arrival";
 import { ForecastModel, forecastVolume, FORECAST_MODELS } from "@/lib/forecast";
 import {
   StaffingModel,
   calculateStaffing,
+  calculateBlendedStaffing,
   StaffingParams,
   DEFAULT_STAFFING_PARAMS,
   STAFFING_MODELS,
@@ -35,6 +36,7 @@ export default function Home() {
 
   const isChat = selectedOrigin.toLowerCase() === "chat";
   const isEmail = selectedOrigin.toLowerCase() === "email";
+  const isAll = !isChat && !isEmail;
 
   const handleOriginChange = useCallback((origin: string) => {
     setSelectedOrigin(origin);
@@ -44,7 +46,7 @@ export default function Home() {
       setStaffingModel("erlang_c");
     } else if (o === "email") {
       setForecastModel("double_exp");
-      setStaffingModel("workload");
+      setStaffingModel("workload_spread");
     }
   }, []);
 
@@ -72,11 +74,59 @@ export default function Home() {
   const origin = selectedOrigin === "__all__" ? undefined : selectedOrigin;
   const teamLabel = selectedTeam === "__all__" ? "All Teams" : selectedTeam;
 
+  // --- Per-origin arrival + forecast (always computed for blended AHT and All Origins staffing) ---
+  const chatArrivalHourly = useMemo(() => {
+    if (!parseResult) return null;
+    return computeArrivalPattern(parseResult.rows, team, "Chat");
+  }, [parseResult, team]);
+
+  const emailArrivalHourly = useMemo(() => {
+    if (!parseResult) return null;
+    return computeArrivalPattern(parseResult.rows, team, "Email");
+  }, [parseResult, team]);
+
+  const chatForecastHourly = useMemo(() => {
+    if (!chatArrivalHourly) return null;
+    return forecastVolume(forecastModel, chatArrivalHourly.matrix, chatArrivalHourly.weeklyBreakdown);
+  }, [chatArrivalHourly, forecastModel]);
+
+  const emailForecastHourly = useMemo(() => {
+    if (!emailArrivalHourly) return null;
+    return forecastVolume(forecastModel, emailArrivalHourly.matrix, emailArrivalHourly.weeklyBreakdown);
+  }, [emailArrivalHourly, forecastModel]);
+
+  const chatArrival15 = useMemo(() => {
+    if (!parseResult) return null;
+    return computeArrivalPattern15(parseResult.rows, team, "Chat");
+  }, [parseResult, team]);
+
+  const emailArrival15 = useMemo(() => {
+    if (!parseResult) return null;
+    return computeArrivalPattern15(parseResult.rows, team, "Email");
+  }, [parseResult, team]);
+
+  const chatForecast15 = useMemo(() => {
+    if (!chatArrival15) return null;
+    return forecastVolume(forecastModel, chatArrival15.matrix, chatArrival15.weeklyBreakdown);
+  }, [chatArrival15, forecastModel]);
+
+  const emailForecast15 = useMemo(() => {
+    if (!emailArrival15) return null;
+    return forecastVolume(forecastModel, emailArrival15.matrix, emailArrival15.weeklyBreakdown);
+  }, [emailArrival15, forecastModel]);
+
+  // Volume-weighted blended AHT
   const effectiveAht = useMemo(() => {
     if (isChat) return staffingParams.chatAhtSeconds;
     if (isEmail) return staffingParams.emailAhtSeconds;
-    return Math.round((staffingParams.chatAhtSeconds + staffingParams.emailAhtSeconds) / 2);
-  }, [isChat, isEmail, staffingParams.chatAhtSeconds, staffingParams.emailAhtSeconds]);
+    const chatVol = chatForecastHourly ? getMatrixTotal(chatForecastHourly) : 0;
+    const emailVol = emailForecastHourly ? getMatrixTotal(emailForecastHourly) : 0;
+    const total = chatVol + emailVol;
+    if (total === 0) return Math.round((staffingParams.chatAhtSeconds + staffingParams.emailAhtSeconds) / 2);
+    return Math.round(
+      (chatVol * staffingParams.chatAhtSeconds + emailVol * staffingParams.emailAhtSeconds) / total
+    );
+  }, [isChat, isEmail, staffingParams.chatAhtSeconds, staffingParams.emailAhtSeconds, chatForecastHourly, emailForecastHourly]);
 
   const mainParams = useMemo(
     () => ({ ...staffingParams, ahtSeconds: effectiveAht }),
@@ -106,8 +156,15 @@ export default function Home() {
 
   const staffingMatrix = useMemo(() => {
     if (!forecastMatrix) return null;
+    if (isAll && chatForecastHourly && emailForecastHourly) {
+      return calculateBlendedStaffing(
+        chatForecastHourly, emailForecastHourly,
+        { ...staffingParams, intervalMinutes: 60 },
+        staffingParams.chatAhtSeconds, staffingParams.emailAhtSeconds,
+      );
+    }
     return calculateStaffing(staffingModel, forecastMatrix, { ...mainParams, intervalMinutes: 60 }, isChat);
-  }, [forecastMatrix, staffingModel, mainParams, isChat]);
+  }, [forecastMatrix, staffingModel, mainParams, isChat, isAll, chatForecastHourly, emailForecastHourly, staffingParams]);
 
   // --- 15-min pipeline (96x7) ---
   const arrivalData15 = useMemo(() => {
@@ -122,43 +179,32 @@ export default function Home() {
 
   const staffingMatrix15 = useMemo(() => {
     if (!forecastMatrix15) return null;
+    if (isAll && chatForecast15 && emailForecast15) {
+      return calculateBlendedStaffing(
+        chatForecast15, emailForecast15,
+        { ...staffingParams, intervalMinutes: 15 },
+        staffingParams.chatAhtSeconds, staffingParams.emailAhtSeconds,
+      );
+    }
     return calculateStaffing(staffingModel, forecastMatrix15, { ...mainParams, intervalMinutes: 15 }, isChat);
-  }, [forecastMatrix15, staffingModel, mainParams, isChat]);
+  }, [forecastMatrix15, staffingModel, mainParams, isChat, isAll, chatForecast15, emailForecast15, staffingParams]);
 
-  // --- Per-origin 15-min pipelines for Labor Plan ---
-  const chatArrival15 = useMemo(() => {
-    if (!parseResult) return null;
-    return computeArrivalPattern15(parseResult.rows, team, "Chat");
-  }, [parseResult, team]);
-
-  const chatForecast15 = useMemo(() => {
-    if (!chatArrival15) return null;
-    return forecastVolume(forecastModel, chatArrival15.matrix, chatArrival15.weeklyBreakdown);
-  }, [chatArrival15, forecastModel]);
-
+  // --- Per-origin 15-min staffing for Labor Plan ---
   const chatStaffing15 = useMemo(() => {
     if (!chatForecast15) return null;
-    return calculateStaffing(staffingModel, chatForecast15, { ...chatParams, intervalMinutes: 15 }, true);
-  }, [chatForecast15, staffingModel, chatParams]);
-
-  const emailArrival15 = useMemo(() => {
-    if (!parseResult) return null;
-    return computeArrivalPattern15(parseResult.rows, team, "Email");
-  }, [parseResult, team]);
-
-  const emailForecast15 = useMemo(() => {
-    if (!emailArrival15) return null;
-    return forecastVolume(forecastModel, emailArrival15.matrix, emailArrival15.weeklyBreakdown);
-  }, [emailArrival15, forecastModel]);
+    return calculateStaffing("erlang_c", chatForecast15, { ...chatParams, intervalMinutes: 15 }, true);
+  }, [chatForecast15, chatParams]);
 
   const emailStaffing15 = useMemo(() => {
     if (!emailForecast15) return null;
-    return calculateStaffing(staffingModel, emailForecast15, { ...emailParams, intervalMinutes: 15 }, false);
-  }, [emailForecast15, staffingModel, emailParams]);
+    return calculateStaffing("workload_spread", emailForecast15, { ...emailParams, intervalMinutes: 15 }, false);
+  }, [emailForecast15, emailParams]);
 
   // --- Labels ---
   const activeForecastLabel = FORECAST_MODELS.find((m) => m.id === forecastModel)?.label ?? "";
-  const activeStaffingLabel = STAFFING_MODELS.find((m) => m.id === staffingModel)?.label ?? "";
+  const activeStaffingLabel = isAll
+    ? "Blended (Erlang-C + Workload Spread)"
+    : (STAFFING_MODELS.find((m) => m.id === staffingModel)?.label ?? "");
   const filterParts: string[] = [];
   if (selectedTeam !== "__all__") filterParts.push(selectedTeam);
   if (selectedOrigin !== "__all__") filterParts.push(selectedOrigin);
@@ -169,7 +215,7 @@ export default function Home() {
     ? `Chat AHT ${staffingParams.chatAhtSeconds}s`
     : isEmail
       ? `Email AHT ${staffingParams.emailAhtSeconds}s`
-      : `Blended AHT ${effectiveAht}s`;
+      : `Blended AHT ${effectiveAht}s (vol-weighted)`;
 
   // Pick active data based on tab
   const isHourly = activeTab === "hourly";
@@ -332,7 +378,7 @@ export default function Home() {
                   />
                   <ArrivalTable
                     title="Headcount Required"
-                    subtitle={`${activeStaffingLabel} (${ahtLabel}, SL ${Math.round(staffingParams.serviceLevelPct * 100)}%, Shrink ${Math.round(staffingParams.shrinkagePct * 100)}%${concLabel})${filterLabel}`}
+                    subtitle={`${activeStaffingLabel} (${ahtLabel}, SL ${Math.round(staffingParams.serviceLevelPct * 100)}%, Shrink ${Math.round(staffingParams.shrinkagePct * 100)}%, Occ ${Math.round(staffingParams.occupancyPct * 100)}%${concLabel})${filterLabel}`}
                     matrix={sMatrix}
                     colorScheme="rust"
                     usePeakTotals
