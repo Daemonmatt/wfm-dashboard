@@ -34,6 +34,19 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<TabId>("hourly");
 
   const isChat = selectedOrigin.toLowerCase() === "chat";
+  const isEmail = selectedOrigin.toLowerCase() === "email";
+
+  const handleOriginChange = useCallback((origin: string) => {
+    setSelectedOrigin(origin);
+    const o = origin.toLowerCase();
+    if (o === "chat") {
+      setForecastModel("double_exp");
+      setStaffingModel("erlang_c");
+    } else if (o === "email") {
+      setForecastModel("double_exp");
+      setStaffingModel("workload");
+    }
+  }, []);
 
   const handleFileLoaded = useCallback(
     async (buffer: ArrayBuffer, name: string) => {
@@ -59,6 +72,27 @@ export default function Home() {
   const origin = selectedOrigin === "__all__" ? undefined : selectedOrigin;
   const teamLabel = selectedTeam === "__all__" ? "All Teams" : selectedTeam;
 
+  const effectiveAht = useMemo(() => {
+    if (isChat) return staffingParams.chatAhtSeconds;
+    if (isEmail) return staffingParams.emailAhtSeconds;
+    return Math.round((staffingParams.chatAhtSeconds + staffingParams.emailAhtSeconds) / 2);
+  }, [isChat, isEmail, staffingParams.chatAhtSeconds, staffingParams.emailAhtSeconds]);
+
+  const mainParams = useMemo(
+    () => ({ ...staffingParams, ahtSeconds: effectiveAht }),
+    [staffingParams, effectiveAht]
+  );
+
+  const chatParams = useMemo(
+    () => ({ ...staffingParams, ahtSeconds: staffingParams.chatAhtSeconds }),
+    [staffingParams]
+  );
+
+  const emailParams = useMemo(
+    () => ({ ...staffingParams, ahtSeconds: staffingParams.emailAhtSeconds }),
+    [staffingParams]
+  );
+
   // --- Hourly pipeline (24x7) ---
   const arrivalData = useMemo(() => {
     if (!parseResult) return null;
@@ -72,8 +106,8 @@ export default function Home() {
 
   const staffingMatrix = useMemo(() => {
     if (!forecastMatrix) return null;
-    return calculateStaffing(staffingModel, forecastMatrix, { ...staffingParams, intervalMinutes: 60 }, isChat);
-  }, [forecastMatrix, staffingModel, staffingParams, isChat]);
+    return calculateStaffing(staffingModel, forecastMatrix, { ...mainParams, intervalMinutes: 60 }, isChat);
+  }, [forecastMatrix, staffingModel, mainParams, isChat]);
 
   // --- 15-min pipeline (96x7) ---
   const arrivalData15 = useMemo(() => {
@@ -88,8 +122,8 @@ export default function Home() {
 
   const staffingMatrix15 = useMemo(() => {
     if (!forecastMatrix15) return null;
-    return calculateStaffing(staffingModel, forecastMatrix15, { ...staffingParams, intervalMinutes: 15 }, isChat);
-  }, [forecastMatrix15, staffingModel, staffingParams, isChat]);
+    return calculateStaffing(staffingModel, forecastMatrix15, { ...mainParams, intervalMinutes: 15 }, isChat);
+  }, [forecastMatrix15, staffingModel, mainParams, isChat]);
 
   // --- Per-origin 15-min pipelines for Labor Plan ---
   const chatArrival15 = useMemo(() => {
@@ -104,8 +138,8 @@ export default function Home() {
 
   const chatStaffing15 = useMemo(() => {
     if (!chatForecast15) return null;
-    return calculateStaffing(staffingModel, chatForecast15, { ...staffingParams, intervalMinutes: 15 }, true);
-  }, [chatForecast15, staffingModel, staffingParams]);
+    return calculateStaffing(staffingModel, chatForecast15, { ...chatParams, intervalMinutes: 15 }, true);
+  }, [chatForecast15, staffingModel, chatParams]);
 
   const emailArrival15 = useMemo(() => {
     if (!parseResult) return null;
@@ -119,8 +153,8 @@ export default function Home() {
 
   const emailStaffing15 = useMemo(() => {
     if (!emailForecast15) return null;
-    return calculateStaffing(staffingModel, emailForecast15, { ...staffingParams, intervalMinutes: 15 }, false);
-  }, [emailForecast15, staffingModel, staffingParams]);
+    return calculateStaffing(staffingModel, emailForecast15, { ...emailParams, intervalMinutes: 15 }, false);
+  }, [emailForecast15, staffingModel, emailParams]);
 
   // --- Labels ---
   const activeForecastLabel = FORECAST_MODELS.find((m) => m.id === forecastModel)?.label ?? "";
@@ -130,6 +164,12 @@ export default function Home() {
   if (selectedOrigin !== "__all__") filterParts.push(selectedOrigin);
   const filterLabel = filterParts.length > 0 ? ` \u2014 ${filterParts.join(" / ")}` : "";
   const concLabel = isChat && staffingParams.concurrency > 1 ? `, Concurrency: ${staffingParams.concurrency}` : "";
+
+  const ahtLabel = isChat
+    ? `Chat AHT ${staffingParams.chatAhtSeconds}s`
+    : isEmail
+      ? `Email AHT ${staffingParams.emailAhtSeconds}s`
+      : `Blended AHT ${effectiveAht}s`;
 
   // Pick active data based on tab
   const isHourly = activeTab === "hourly";
@@ -203,7 +243,7 @@ export default function Home() {
               onTeamChange={setSelectedTeam}
               origins={parseResult.origins}
               selectedOrigin={selectedOrigin}
-              onOriginChange={setSelectedOrigin}
+              onOriginChange={handleOriginChange}
               forecastModel={forecastModel}
               onForecastModelChange={setForecastModel}
               staffingModel={staffingModel}
@@ -292,7 +332,7 @@ export default function Home() {
                   />
                   <ArrivalTable
                     title="Headcount Required"
-                    subtitle={`${activeStaffingLabel} (AHT ${staffingParams.ahtSeconds}s, SL ${Math.round(staffingParams.serviceLevelPct * 100)}%, Shrink ${Math.round(staffingParams.shrinkagePct * 100)}%${concLabel})${filterLabel}`}
+                    subtitle={`${activeStaffingLabel} (${ahtLabel}, SL ${Math.round(staffingParams.serviceLevelPct * 100)}%, Shrink ${Math.round(staffingParams.shrinkagePct * 100)}%${concLabel})${filterLabel}`}
                     matrix={sMatrix}
                     colorScheme="rust"
                     usePeakTotals

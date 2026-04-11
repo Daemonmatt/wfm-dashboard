@@ -1,6 +1,6 @@
 import { ArrivalMatrix } from "./arrival";
 
-export type StaffingModel = "erlang_c" | "erlang_a" | "simple_ratio" | "occupancy" | "production_rate";
+export type StaffingModel = "erlang_c" | "erlang_a" | "simple_ratio" | "occupancy" | "production_rate" | "workload";
 
 export const STAFFING_MODELS: {
   id: StaffingModel;
@@ -25,29 +25,42 @@ export const STAFFING_MODELS: {
   {
     id: "occupancy",
     label: "Occupancy-Based",
-    description: "Targets a maximum agent occupancy rate (default 85%)",
+    description: "Targets a maximum agent occupancy rate",
   },
   {
     id: "production_rate",
     label: "Production Rate",
     description: "HC = volume / (cases per agent per hour), adjusted for shrinkage",
   },
+  {
+    id: "workload",
+    label: "Workload",
+    description: "HC = (volume × AHT) / (interval × utilization × (1 − shrinkage))",
+  },
 ];
 
 export interface StaffingParams {
   ahtSeconds: number;
+  chatAhtSeconds: number;
+  emailAhtSeconds: number;
   serviceLevelPct: number;
   targetAnswerTimeSec: number;
   shrinkagePct: number;
+  occupancyPct: number;
+  utilizationPct: number;
   intervalMinutes: number;
   concurrency: number;
 }
 
 export const DEFAULT_STAFFING_PARAMS: StaffingParams = {
   ahtSeconds: 900,
+  chatAhtSeconds: 900,
+  emailAhtSeconds: 900,
   serviceLevelPct: 0.8,
   targetAnswerTimeSec: 60,
   shrinkagePct: 0.3,
+  occupancyPct: 0.85,
+  utilizationPct: 0.85,
   intervalMinutes: 60,
   concurrency: 1,
 };
@@ -98,12 +111,6 @@ function erlangCAgents(volume: number, p: StaffingParams): number {
   return Math.ceil(agents / (1 - p.shrinkagePct));
 }
 
-/**
- * Erlang-A: accounts for customer abandonment (patience).
- * Uses an iterative approximation: effective offered load is reduced
- * by the probability of abandonment at each staffing level.
- * Patience (avg time customer waits before abandoning) is set to TAT * 2.
- */
 function erlangAAgents(volume: number, p: StaffingParams): number {
   if (volume <= 0) return 0;
   const aht = p.ahtSeconds;
@@ -136,29 +143,31 @@ function simpleRatioAgents(volume: number, p: StaffingParams): number {
   return Math.ceil(raw / (1 - p.shrinkagePct));
 }
 
-/**
- * Occupancy-based: ensures agents don't exceed a target occupancy (85%).
- * Occupancy = traffic intensity / agents. Solve for agents >= A / maxOccupancy.
- */
 function occupancyAgents(volume: number, p: StaffingParams): number {
   if (volume <= 0) return 0;
   const aht = p.ahtSeconds;
   const interval = p.intervalMinutes * 60;
   const A = (volume * aht) / interval;
-  const maxOccupancy = 0.85;
-  const raw = Math.ceil(A / maxOccupancy);
+  const maxOcc = p.occupancyPct > 0 ? p.occupancyPct : 0.85;
+  const raw = Math.ceil(A / maxOcc);
   return Math.ceil(raw / (1 - p.shrinkagePct));
 }
 
-/**
- * Production Rate: calculate how many cases one agent can handle per hour,
- * then divide volume by that rate.
- */
 function productionRateAgents(volume: number, p: StaffingParams): number {
   if (volume <= 0) return 0;
   const casesPerAgentPerHour = (p.intervalMinutes * 60) / p.ahtSeconds;
   const raw = volume / casesPerAgentPerHour;
   return Math.ceil(raw / (1 - p.shrinkagePct));
+}
+
+function workloadAgents(volume: number, p: StaffingParams): number {
+  if (volume <= 0) return 0;
+  const aht = p.ahtSeconds;
+  const interval = p.intervalMinutes * 60;
+  const util = p.utilizationPct > 0 ? p.utilizationPct : 0.85;
+  const shrink = p.shrinkagePct;
+  const raw = (volume * aht) / (interval * util * (1 - shrink));
+  return Math.ceil(raw);
 }
 
 const MODEL_FNS: Record<StaffingModel, (v: number, p: StaffingParams) => number> = {
@@ -167,6 +176,7 @@ const MODEL_FNS: Record<StaffingModel, (v: number, p: StaffingParams) => number>
   simple_ratio: simpleRatioAgents,
   occupancy: occupancyAgents,
   production_rate: productionRateAgents,
+  workload: workloadAgents,
 };
 
 export function calculateStaffing(
