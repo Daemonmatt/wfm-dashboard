@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { ForecastModel, FORECAST_MODELS } from "@/lib/forecast";
 import { StaffingModel, STAFFING_MODELS, StaffingParams } from "@/lib/staffing";
 
@@ -9,8 +9,8 @@ interface FilterBarProps {
   selectedTeam: string;
   onTeamChange: (team: string) => void;
   origins: string[];
-  selectedOrigin: string;
-  onOriginChange: (origin: string) => void;
+  selectedOrigins: string[];
+  onOriginsChange: (origins: string[]) => void;
   forecastModel: ForecastModel;
   onForecastModelChange: (model: ForecastModel) => void;
   staffingModel: StaffingModel;
@@ -31,8 +31,8 @@ export default function FilterBar({
   selectedTeam,
   onTeamChange,
   origins,
-  selectedOrigin,
-  onOriginChange,
+  selectedOrigins,
+  onOriginsChange,
   forecastModel,
   onForecastModelChange,
   staffingModel,
@@ -41,10 +41,14 @@ export default function FilterBar({
   onStaffingParamsChange,
   disabled,
 }: FilterBarProps) {
-  const isChat = selectedOrigin.toLowerCase() === "chat";
-  const isEmail = selectedOrigin.toLowerCase() === "email";
-  const chatDisabled = disabled || isEmail;
-  const emailDisabled = disabled || isChat;
+  const allSelected = selectedOrigins.length === 0;
+  const onlyChatSelected = selectedOrigins.length === 1 && selectedOrigins[0].toLowerCase() === "chat";
+  const onlyEmailSelected = selectedOrigins.length === 1 && selectedOrigins[0].toLowerCase() === "email";
+  const chatIncluded = allSelected || selectedOrigins.some((o) => o.toLowerCase() === "chat");
+  const emailIncluded = allSelected || selectedOrigins.some((o) => o.toLowerCase() === "email");
+
+  const chatAhtDisabled = disabled || (!chatIncluded);
+  const emailAhtDisabled = disabled || (!emailIncluded);
 
   return (
     <div className="flex flex-wrap items-end gap-x-2 gap-y-2">
@@ -56,10 +60,12 @@ export default function FilterBar({
       </Field>
 
       <Field label="Origin">
-        <select value={selectedOrigin} onChange={(e) => onOriginChange(e.target.value)} disabled={disabled} className={selectClass}>
-          <option value="__all__">All Origins</option>
-          {origins.map((o) => <option key={o} value={o}>{o}</option>)}
-        </select>
+        <OriginMultiSelect
+          origins={origins}
+          selected={selectedOrigins}
+          onChange={onOriginsChange}
+          disabled={disabled}
+        />
       </Field>
 
       <Divider />
@@ -76,7 +82,7 @@ export default function FilterBar({
         </select>
       </Field>
 
-      {isChat && (
+      {onlyChatSelected && (
         <Field label="Concurrency">
           <select
             value={staffingParams.concurrency}
@@ -93,12 +99,12 @@ export default function FilterBar({
 
       <Divider />
 
-      <div className={`flex items-end gap-1.5 ${isEmail ? "opacity-40 pointer-events-none" : ""}`}>
-        <NumField label="Chat AHT (s)" value={staffingParams.chatAhtSeconds} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, chatAhtSeconds: v })} disabled={chatDisabled} accent="blue" />
+      <div className={`flex items-end gap-1.5 ${!chatIncluded ? "opacity-40 pointer-events-none" : ""}`}>
+        <NumField label="Chat AHT (s)" value={staffingParams.chatAhtSeconds} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, chatAhtSeconds: v })} disabled={chatAhtDisabled} accent="blue" />
       </div>
 
-      <div className={`flex items-end gap-1.5 ${isChat ? "opacity-40 pointer-events-none" : ""}`}>
-        <NumField label="Email AHT (s)" value={staffingParams.emailAhtSeconds} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, emailAhtSeconds: v })} disabled={emailDisabled} accent="teal" />
+      <div className={`flex items-end gap-1.5 ${!emailIncluded ? "opacity-40 pointer-events-none" : ""}`}>
+        <NumField label="Email AHT (s)" value={staffingParams.emailAhtSeconds} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, emailAhtSeconds: v })} disabled={emailAhtDisabled} accent="teal" />
       </div>
 
       <Divider />
@@ -107,6 +113,92 @@ export default function FilterBar({
       <NumField label="TAT (s)" value={staffingParams.targetAnswerTimeSec} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, targetAnswerTimeSec: v })} disabled={disabled} />
       <NumField label="Shrink %" value={Math.round(staffingParams.shrinkagePct * 100)} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, shrinkagePct: v / 100 })} disabled={disabled} />
       <NumField label="Occ %" value={Math.round(staffingParams.occupancyPct * 100)} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, occupancyPct: v / 100 })} disabled={disabled} />
+    </div>
+  );
+}
+
+/* ── Origin multi-select dropdown with checkboxes ── */
+
+function OriginMultiSelect({
+  origins,
+  selected,
+  onChange,
+  disabled,
+}: {
+  origins: string[];
+  selected: string[];
+  onChange: (v: string[]) => void;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const allSelected = selected.length === 0;
+  const label = allSelected
+    ? "All Origins"
+    : selected.length === 1
+      ? selected[0]
+      : `${selected.length} selected`;
+
+  const toggleOrigin = (o: string) => {
+    if (selected.includes(o)) {
+      onChange(selected.filter((s) => s !== o));
+    } else {
+      onChange([...selected, o]);
+    }
+  };
+
+  const selectAll = () => onChange([]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen(!open)}
+        className={`${selectClass} flex items-center gap-1.5 min-w-[100px] justify-between cursor-pointer`}
+      >
+        <span className="truncate">{label}</span>
+        <svg className={`h-3 w-3 flex-shrink-0 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute top-full left-0 z-50 mt-1 min-w-[140px] rounded-md border border-slate-200 bg-white shadow-lg dark:border-slate-600 dark:bg-slate-800">
+          <label className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer border-b border-slate-100 dark:border-slate-700">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={selectAll}
+              className="h-3 w-3 rounded border-slate-300 text-[#2563eb] focus:ring-[#2563eb]/25 accent-[#2563eb]"
+            />
+            <span className="font-medium">All Origins</span>
+          </label>
+          {origins.map((o) => (
+            <label
+              key={o}
+              className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                checked={!allSelected && selected.includes(o)}
+                onChange={() => toggleOrigin(o)}
+                className="h-3 w-3 rounded border-slate-300 text-[#2563eb] focus:ring-[#2563eb]/25 accent-[#2563eb]"
+              />
+              {o}
+            </label>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

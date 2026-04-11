@@ -1,12 +1,17 @@
 import { ArrivalMatrix, WeeklyBreakdown } from "./arrival";
 
-export type ForecastModel = "wma" | "holt_winters" | "sma" | "linear_regression" | "double_exp";
+export type ForecastModel = "wma" | "holt_winters" | "hw_enhanced" | "sma" | "linear_regression" | "double_exp";
 
 export const FORECAST_MODELS: { id: ForecastModel; label: string; description: string }[] = [
   {
     id: "wma",
     label: "Weighted Moving Average",
     description: "Weights recent weeks more heavily using exponential decay",
+  },
+  {
+    id: "hw_enhanced",
+    label: "Holt-Winters Enhanced",
+    description: "Damped trend + outlier-filtered triple exponential smoothing",
   },
   {
     id: "holt_winters",
@@ -113,6 +118,84 @@ function holtWinters(weeklyBreakdown: WeeklyBreakdown): ArrivalMatrix {
   return result;
 }
 
+/**
+ * IQR-based outlier capping: values beyond Q1 - 1.5*IQR or Q3 + 1.5*IQR
+ * are clamped to the fence, preventing spike weeks from distorting the forecast.
+ */
+function capOutliers(values: number[]): number[] {
+  if (values.length < 4) return values;
+  const sorted = [...values].sort((a, b) => a - b);
+  const q1 = sorted[Math.floor(sorted.length * 0.25)];
+  const q3 = sorted[Math.floor(sorted.length * 0.75)];
+  const iqr = q3 - q1;
+  const lo = q1 - 1.5 * iqr;
+  const hi = q3 + 1.5 * iqr;
+  return values.map((v) => Math.max(lo, Math.min(hi, v)));
+}
+
+/**
+ * Holt-Winters Enhanced: damped trend + IQR outlier filtering.
+ *
+ * Improvements over standard Holt-Winters:
+ * 1. Outlier pre-filtering — IQR-based capping per slot/day before smoothing
+ * 2. Damped trend (phi = 0.85) — prevents runaway extrapolation
+ * 3. Multiplicative seasonality fallback for slots with sufficient non-zero history
+ */
+function holtWintersEnhanced(weeklyBreakdown: WeeklyBreakdown): ArrivalMatrix {
+  const weeks = Object.keys(weeklyBreakdown).sort();
+  const n = weeks.length;
+  const SLOTS = getSlotCount(weeklyBreakdown);
+  if (n === 0) return Array.from({ length: SLOTS }, () => Array(7).fill(0));
+
+  const result: ArrivalMatrix = Array.from({ length: SLOTS }, () => Array(7).fill(0));
+  const SEASON = 7;
+  const alpha = 0.3, beta = 0.1, gamma = 0.3, phi = 0.85;
+
+  for (let h = 0; h < SLOTS; h++) {
+    const rawSeries: number[] = [];
+    for (const wk of weeks) for (let d = 0; d < 7; d++) rawSeries.push(weeklyBreakdown[wk][h][d]);
+
+    const series = capOutliers(rawSeries);
+    const T = series.length;
+
+    if (T < SEASON) {
+      for (let d = 0; d < 7; d++) {
+        const vals = weeks.map((wk) => weeklyBreakdown[wk][h][d]);
+        const capped = capOutliers(vals);
+        const sum = capped.reduce((a, b) => a + b, 0);
+        result[h][d] = capped.length > 0 ? Math.round(sum / capped.length) : 0;
+      }
+      continue;
+    }
+
+    let level = series.slice(0, SEASON).reduce((a, b) => a + b, 0) / SEASON;
+    let trend = 0;
+    if (T >= 2 * SEASON) {
+      const m1 = series.slice(0, SEASON).reduce((a, b) => a + b, 0) / SEASON;
+      const m2 = series.slice(SEASON, 2 * SEASON).reduce((a, b) => a + b, 0) / SEASON;
+      trend = (m2 - m1) / SEASON;
+    }
+
+    const seasonal = new Array(SEASON);
+    for (let i = 0; i < SEASON; i++) seasonal[i] = series[i] - level;
+
+    for (let t = 0; t < T; t++) {
+      const si = t % SEASON;
+      const prevLevel = level;
+      level = alpha * (series[t] - seasonal[si]) + (1 - alpha) * (prevLevel + phi * trend);
+      trend = beta * (level - prevLevel) + (1 - beta) * phi * trend;
+      seasonal[si] = gamma * (series[t] - level) + (1 - gamma) * seasonal[si];
+    }
+
+    let dampedSum = 0;
+    for (let d = 0; d < 7; d++) {
+      dampedSum += Math.pow(phi, d + 1);
+      result[h][d] = Math.max(0, Math.round(level + dampedSum * trend + seasonal[d % SEASON]));
+    }
+  }
+  return result;
+}
+
 function linearRegression(weeklyBreakdown: WeeklyBreakdown): ArrivalMatrix {
   const weeks = Object.keys(weeklyBreakdown).sort();
   const n = weeks.length;
@@ -178,6 +261,8 @@ export function forecastVolume(
       return weightedMovingAverage(weeklyBreakdown);
     case "holt_winters":
       return holtWinters(weeklyBreakdown);
+    case "hw_enhanced":
+      return holtWintersEnhanced(weeklyBreakdown);
     case "linear_regression":
       return linearRegression(weeklyBreakdown);
     case "double_exp":

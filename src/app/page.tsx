@@ -28,25 +28,30 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
 
   const [selectedTeam, setSelectedTeam] = useState("__all__");
-  const [selectedOrigin, setSelectedOrigin] = useState("__all__");
-  const [forecastModel, setForecastModel] = useState<ForecastModel>("wma");
+  const [selectedOrigins, setSelectedOrigins] = useState<string[]>([]);
+  const [forecastModel, setForecastModel] = useState<ForecastModel>("hw_enhanced");
   const [staffingModel, setStaffingModel] = useState<StaffingModel>("erlang_c");
   const [staffingParams, setStaffingParams] = useState<StaffingParams>(DEFAULT_STAFFING_PARAMS);
   const [activeTab, setActiveTab] = useState<TabId>("hourly");
 
-  const isChat = selectedOrigin.toLowerCase() === "chat";
-  const isEmail = selectedOrigin.toLowerCase() === "email";
-  const isAll = !isChat && !isEmail;
+  const isAll = selectedOrigins.length === 0;
+  const isOnlyChat = selectedOrigins.length === 1 && selectedOrigins[0].toLowerCase() === "chat";
+  const isOnlyEmail = selectedOrigins.length === 1 && selectedOrigins[0].toLowerCase() === "email";
+  const chatIncluded = isAll || selectedOrigins.some((o) => o.toLowerCase() === "chat");
+  const emailIncluded = isAll || selectedOrigins.some((o) => o.toLowerCase() === "email");
+  const isBothIncluded = chatIncluded && emailIncluded && !isOnlyChat && !isOnlyEmail;
 
-  const handleOriginChange = useCallback((origin: string) => {
-    setSelectedOrigin(origin);
-    const o = origin.toLowerCase();
-    if (o === "chat") {
-      setForecastModel("double_exp");
-      setStaffingModel("erlang_c");
-    } else if (o === "email") {
-      setForecastModel("double_exp");
-      setStaffingModel("workload_spread");
+  const handleOriginsChange = useCallback((origins: string[]) => {
+    setSelectedOrigins(origins);
+    if (origins.length === 1) {
+      const o = origins[0].toLowerCase();
+      if (o === "chat") {
+        setForecastModel("hw_enhanced");
+        setStaffingModel("erlang_c");
+      } else if (o === "email") {
+        setForecastModel("hw_enhanced");
+        setStaffingModel("workload_spread_back");
+      }
     }
   }, []);
 
@@ -59,7 +64,7 @@ export default function Home() {
         setParseResult(result);
         setFileName(name);
         setSelectedTeam("__all__");
-        setSelectedOrigin("__all__");
+        setSelectedOrigins([]);
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : "Failed to parse file");
         setParseResult(null);
@@ -71,10 +76,10 @@ export default function Home() {
   );
 
   const team = selectedTeam === "__all__" ? undefined : selectedTeam;
-  const origin = selectedOrigin === "__all__" ? undefined : selectedOrigin;
+  const originFilter: string[] | undefined = selectedOrigins.length === 0 ? undefined : selectedOrigins;
   const teamLabel = selectedTeam === "__all__" ? "All Teams" : selectedTeam;
 
-  // --- Per-origin arrival + forecast (always computed for blended AHT and All Origins staffing) ---
+  // --- Per-origin arrival + forecast (always computed for blended AHT and blended staffing) ---
   const chatArrivalHourly = useMemo(() => {
     if (!parseResult) return null;
     return computeArrivalPattern(parseResult.rows, team, "Chat");
@@ -117,8 +122,8 @@ export default function Home() {
 
   // Volume-weighted blended AHT
   const effectiveAht = useMemo(() => {
-    if (isChat) return staffingParams.chatAhtSeconds;
-    if (isEmail) return staffingParams.emailAhtSeconds;
+    if (isOnlyChat) return staffingParams.chatAhtSeconds;
+    if (isOnlyEmail) return staffingParams.emailAhtSeconds;
     const chatVol = chatForecastHourly ? getMatrixTotal(chatForecastHourly) : 0;
     const emailVol = emailForecastHourly ? getMatrixTotal(emailForecastHourly) : 0;
     const total = chatVol + emailVol;
@@ -126,7 +131,7 @@ export default function Home() {
     return Math.round(
       (chatVol * staffingParams.chatAhtSeconds + emailVol * staffingParams.emailAhtSeconds) / total
     );
-  }, [isChat, isEmail, staffingParams.chatAhtSeconds, staffingParams.emailAhtSeconds, chatForecastHourly, emailForecastHourly]);
+  }, [isOnlyChat, isOnlyEmail, staffingParams.chatAhtSeconds, staffingParams.emailAhtSeconds, chatForecastHourly, emailForecastHourly]);
 
   const mainParams = useMemo(
     () => ({ ...staffingParams, ahtSeconds: effectiveAht }),
@@ -146,8 +151,8 @@ export default function Home() {
   // --- Hourly pipeline (24x7) ---
   const arrivalData = useMemo(() => {
     if (!parseResult) return null;
-    return computeArrivalPattern(parseResult.rows, team, origin);
-  }, [parseResult, team, origin]);
+    return computeArrivalPattern(parseResult.rows, team, originFilter);
+  }, [parseResult, team, originFilter]);
 
   const forecastMatrix = useMemo(() => {
     if (!arrivalData) return null;
@@ -156,21 +161,21 @@ export default function Home() {
 
   const staffingMatrix = useMemo(() => {
     if (!forecastMatrix) return null;
-    if (isAll && chatForecastHourly && emailForecastHourly) {
+    if (isBothIncluded && chatForecastHourly && emailForecastHourly) {
       return calculateBlendedStaffing(
         chatForecastHourly, emailForecastHourly,
         { ...staffingParams, intervalMinutes: 60 },
         staffingParams.chatAhtSeconds, staffingParams.emailAhtSeconds,
       );
     }
-    return calculateStaffing(staffingModel, forecastMatrix, { ...mainParams, intervalMinutes: 60 }, isChat);
-  }, [forecastMatrix, staffingModel, mainParams, isChat, isAll, chatForecastHourly, emailForecastHourly, staffingParams]);
+    return calculateStaffing(staffingModel, forecastMatrix, { ...mainParams, intervalMinutes: 60 }, isOnlyChat);
+  }, [forecastMatrix, staffingModel, mainParams, isOnlyChat, isBothIncluded, chatForecastHourly, emailForecastHourly, staffingParams]);
 
   // --- 15-min pipeline (96x7) ---
   const arrivalData15 = useMemo(() => {
     if (!parseResult) return null;
-    return computeArrivalPattern15(parseResult.rows, team, origin);
-  }, [parseResult, team, origin]);
+    return computeArrivalPattern15(parseResult.rows, team, originFilter);
+  }, [parseResult, team, originFilter]);
 
   const forecastMatrix15 = useMemo(() => {
     if (!arrivalData15) return null;
@@ -179,15 +184,15 @@ export default function Home() {
 
   const staffingMatrix15 = useMemo(() => {
     if (!forecastMatrix15) return null;
-    if (isAll && chatForecast15 && emailForecast15) {
+    if (isBothIncluded && chatForecast15 && emailForecast15) {
       return calculateBlendedStaffing(
         chatForecast15, emailForecast15,
         { ...staffingParams, intervalMinutes: 15 },
         staffingParams.chatAhtSeconds, staffingParams.emailAhtSeconds,
       );
     }
-    return calculateStaffing(staffingModel, forecastMatrix15, { ...mainParams, intervalMinutes: 15 }, isChat);
-  }, [forecastMatrix15, staffingModel, mainParams, isChat, isAll, chatForecast15, emailForecast15, staffingParams]);
+    return calculateStaffing(staffingModel, forecastMatrix15, { ...mainParams, intervalMinutes: 15 }, isOnlyChat);
+  }, [forecastMatrix15, staffingModel, mainParams, isOnlyChat, isBothIncluded, chatForecast15, emailForecast15, staffingParams]);
 
   // --- Per-origin 15-min staffing for Labor Plan ---
   const chatStaffing15 = useMemo(() => {
@@ -197,23 +202,23 @@ export default function Home() {
 
   const emailStaffing15 = useMemo(() => {
     if (!emailForecast15) return null;
-    return calculateStaffing("workload_spread", emailForecast15, { ...emailParams, intervalMinutes: 15 }, false);
+    return calculateStaffing("workload_spread_back", emailForecast15, { ...emailParams, intervalMinutes: 15 }, false);
   }, [emailForecast15, emailParams]);
 
   // --- Labels ---
   const activeForecastLabel = FORECAST_MODELS.find((m) => m.id === forecastModel)?.label ?? "";
-  const activeStaffingLabel = isAll
-    ? "Blended (Erlang-C + Workload Spread)"
+  const activeStaffingLabel = isBothIncluded
+    ? "Blended (Erlang-C + Workload Spread Backward)"
     : (STAFFING_MODELS.find((m) => m.id === staffingModel)?.label ?? "");
   const filterParts: string[] = [];
   if (selectedTeam !== "__all__") filterParts.push(selectedTeam);
-  if (selectedOrigin !== "__all__") filterParts.push(selectedOrigin);
+  if (selectedOrigins.length > 0) filterParts.push(selectedOrigins.join(", "));
   const filterLabel = filterParts.length > 0 ? ` \u2014 ${filterParts.join(" / ")}` : "";
-  const concLabel = isChat && staffingParams.concurrency > 1 ? `, Concurrency: ${staffingParams.concurrency}` : "";
+  const concLabel = isOnlyChat && staffingParams.concurrency > 1 ? `, Concurrency: ${staffingParams.concurrency}` : "";
 
-  const ahtLabel = isChat
+  const ahtLabel = isOnlyChat
     ? `Chat AHT ${staffingParams.chatAhtSeconds}s`
-    : isEmail
+    : isOnlyEmail
       ? `Email AHT ${staffingParams.emailAhtSeconds}s`
       : `Blended AHT ${effectiveAht}s (vol-weighted)`;
 
@@ -288,8 +293,8 @@ export default function Home() {
               selectedTeam={selectedTeam}
               onTeamChange={setSelectedTeam}
               origins={parseResult.origins}
-              selectedOrigin={selectedOrigin}
-              onOriginChange={handleOriginChange}
+              selectedOrigins={selectedOrigins}
+              onOriginsChange={handleOriginsChange}
               forecastModel={forecastModel}
               onForecastModelChange={setForecastModel}
               staffingModel={staffingModel}
