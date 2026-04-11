@@ -10,6 +10,7 @@ import LaborPlanTable from "@/components/LaborPlanTable";
 import { parseFile, ParseResult } from "@/lib/parser";
 import { computeArrivalPattern, computeArrivalPattern15, formatHour, formatSlot, getMatrixTotal, getForecastWeekDates, getForecastWeekDatesLong } from "@/lib/arrival";
 import { ForecastModel, forecastVolume, FORECAST_MODELS } from "@/lib/forecast";
+import { ArrivalMatrix } from "@/lib/arrival";
 import {
   StaffingModel,
   calculateStaffing,
@@ -20,6 +21,11 @@ import {
 } from "@/lib/staffing";
 
 type TabId = "hourly" | "15min";
+
+function applyFactor(matrix: ArrivalMatrix, factor: number): ArrivalMatrix {
+  if (factor === 1) return matrix;
+  return matrix.map((row) => row.map((v) => Math.round(v * factor)));
+}
 
 export default function Home() {
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
@@ -90,15 +96,17 @@ export default function Home() {
     return computeArrivalPattern(parseResult.rows, team, "Email");
   }, [parseResult, team]);
 
+  const mf = staffingParams.multiplyFactor;
+
   const chatForecastHourly = useMemo(() => {
     if (!chatArrivalHourly) return null;
-    return forecastVolume(forecastModel, chatArrivalHourly.matrix, chatArrivalHourly.weeklyBreakdown);
-  }, [chatArrivalHourly, forecastModel]);
+    return applyFactor(forecastVolume(forecastModel, chatArrivalHourly.matrix, chatArrivalHourly.weeklyBreakdown), mf);
+  }, [chatArrivalHourly, forecastModel, mf]);
 
   const emailForecastHourly = useMemo(() => {
     if (!emailArrivalHourly) return null;
-    return forecastVolume(forecastModel, emailArrivalHourly.matrix, emailArrivalHourly.weeklyBreakdown);
-  }, [emailArrivalHourly, forecastModel]);
+    return applyFactor(forecastVolume(forecastModel, emailArrivalHourly.matrix, emailArrivalHourly.weeklyBreakdown), mf);
+  }, [emailArrivalHourly, forecastModel, mf]);
 
   const chatArrival15 = useMemo(() => {
     if (!parseResult) return null;
@@ -112,13 +120,13 @@ export default function Home() {
 
   const chatForecast15 = useMemo(() => {
     if (!chatArrival15) return null;
-    return forecastVolume(forecastModel, chatArrival15.matrix, chatArrival15.weeklyBreakdown);
-  }, [chatArrival15, forecastModel]);
+    return applyFactor(forecastVolume(forecastModel, chatArrival15.matrix, chatArrival15.weeklyBreakdown), mf);
+  }, [chatArrival15, forecastModel, mf]);
 
   const emailForecast15 = useMemo(() => {
     if (!emailArrival15) return null;
-    return forecastVolume(forecastModel, emailArrival15.matrix, emailArrival15.weeklyBreakdown);
-  }, [emailArrival15, forecastModel]);
+    return applyFactor(forecastVolume(forecastModel, emailArrival15.matrix, emailArrival15.weeklyBreakdown), mf);
+  }, [emailArrival15, forecastModel, mf]);
 
   // Volume-weighted blended AHT
   const effectiveAht = useMemo(() => {
@@ -156,8 +164,8 @@ export default function Home() {
 
   const forecastMatrix = useMemo(() => {
     if (!arrivalData) return null;
-    return forecastVolume(forecastModel, arrivalData.matrix, arrivalData.weeklyBreakdown);
-  }, [arrivalData, forecastModel]);
+    return applyFactor(forecastVolume(forecastModel, arrivalData.matrix, arrivalData.weeklyBreakdown), mf);
+  }, [arrivalData, forecastModel, mf]);
 
   const staffingMatrix = useMemo(() => {
     if (!forecastMatrix) return null;
@@ -179,8 +187,8 @@ export default function Home() {
 
   const forecastMatrix15 = useMemo(() => {
     if (!arrivalData15) return null;
-    return forecastVolume(forecastModel, arrivalData15.matrix, arrivalData15.weeklyBreakdown);
-  }, [arrivalData15, forecastModel]);
+    return applyFactor(forecastVolume(forecastModel, arrivalData15.matrix, arrivalData15.weeklyBreakdown), mf);
+  }, [arrivalData15, forecastModel, mf]);
 
   const staffingMatrix15 = useMemo(() => {
     if (!forecastMatrix15) return null;
@@ -215,6 +223,7 @@ export default function Home() {
   if (selectedOrigins.length > 0) filterParts.push(selectedOrigins.join(", "));
   const filterLabel = filterParts.length > 0 ? ` \u2014 ${filterParts.join(" / ")}` : "";
   const concLabel = isOnlyChat && staffingParams.concurrency > 1 ? `, Concurrency: ${staffingParams.concurrency}` : "";
+  const factorLabel = mf !== 1 ? `, Factor: ${mf}×` : "";
 
   const ahtLabel = isOnlyChat
     ? `Chat AHT ${staffingParams.chatAhtSeconds}s`
@@ -375,7 +384,7 @@ export default function Home() {
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                   <ArrivalTable
                     title="Forecasted Volume"
-                    subtitle={`${activeForecastLabel}${filterLabel} (${intervalLabel})`}
+                    subtitle={`${activeForecastLabel}${factorLabel}${filterLabel} (${intervalLabel})`}
                     matrix={fMatrix}
                     colorScheme="teal"
                     formatRowLabel={rowFormatter}

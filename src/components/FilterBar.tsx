@@ -113,6 +113,10 @@ export default function FilterBar({
       <NumField label="TAT (s)" value={staffingParams.targetAnswerTimeSec} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, targetAnswerTimeSec: v })} disabled={disabled} />
       <NumField label="Shrink %" value={Math.round(staffingParams.shrinkagePct * 100)} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, shrinkagePct: v / 100 })} disabled={disabled} />
       <NumField label="Occ %" value={Math.round(staffingParams.occupancyPct * 100)} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, occupancyPct: v / 100 })} disabled={disabled} />
+
+      <Divider />
+
+      <NumField label="Factor x" value={staffingParams.multiplyFactor} onCommit={(v) => onStaffingParamsChange({ ...staffingParams, multiplyFactor: v })} disabled={disabled} />
     </div>
   );
 }
@@ -219,6 +223,7 @@ function Divider() {
 const ACCENT: Record<string, string> = {
   blue: "border-blue-400 dark:border-blue-600",
   teal: "border-teal-400 dark:border-teal-600",
+  orange: "border-orange-400 dark:border-orange-600",
 };
 
 function NumField({

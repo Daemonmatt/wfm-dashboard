@@ -59,6 +59,7 @@ export interface StaffingParams {
   occupancyPct: number;
   intervalMinutes: number;
   concurrency: number;
+  multiplyFactor: number;
 }
 
 export const DEFAULT_STAFFING_PARAMS: StaffingParams = {
@@ -71,6 +72,7 @@ export const DEFAULT_STAFFING_PARAMS: StaffingParams = {
   occupancyPct: 0.85,
   intervalMinutes: 60,
   concurrency: 1,
+  multiplyFactor: 1.0,
 };
 
 // --- Shared math ---
