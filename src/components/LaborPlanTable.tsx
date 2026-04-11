@@ -15,16 +15,25 @@ interface LaborPlanTableProps {
 const DAY_ORDER = [0, 1, 2, 3, 4, 5, 6];
 const DAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-function formatSlotAmPm(slot: number): string {
+function formatSlotCsv(slot: number): string {
   const h24 = Math.floor(slot / 4);
   const m = (slot % 4) * 15;
   const suffix = h24 < 12 ? "AM" : "PM";
   const h12 = h24 === 0 ? 12 : h24 > 12 ? h24 - 12 : h24;
-  return `${h12}:${String(m).padStart(2, "0")}${suffix}`;
+  return `${String(h12).padStart(2, "0")}:${String(m).padStart(2, "0")} ${suffix}`;
+}
+
+function formatSlotUi(slot: number): string {
+  const h24 = Math.floor(slot / 4);
+  const m = (slot % 4) * 15;
+  const suffix = h24 < 12 ? "AM" : "PM";
+  const h12 = h24 === 0 ? 12 : h24 > 12 ? h24 - 12 : h24;
+  return `${String(h12).padStart(2, "0")}:${String(m).padStart(2, "0")}${suffix}`;
 }
 
 const SLOT_COUNT = 96;
-const SLOT_LABELS = Array.from({ length: SLOT_COUNT }, (_, i) => formatSlotAmPm(i));
+const CSV_SLOT_LABELS = Array.from({ length: SLOT_COUNT }, (_, i) => formatSlotCsv(i));
+const UI_SLOT_LABELS = Array.from({ length: SLOT_COUNT }, (_, i) => formatSlotUi(i));
 
 function fmt(v: number): string {
   return v === 0 ? "0.0" : v % 1 === 0 ? `${v}.0` : v.toFixed(1);
@@ -56,15 +65,15 @@ export default function LaborPlanTable({
 
   const handleExportCSV = useCallback(() => {
     const lines: string[] = [];
+
     if (dayDates) {
-      const dateRow = [teamLabel, ...DAY_ORDER.flatMap((_, idx) => Array(SLOT_COUNT).fill(dayDates[idx]))];
+      const dateRow = ["", ...DAY_ORDER.flatMap((_, idx) => Array(SLOT_COUNT).fill(dayDates[idx]))];
       lines.push(dateRow.join(","));
-    } else {
-      const dayRow = [teamLabel, ...DAY_ORDER.flatMap((_, idx) => Array(SLOT_COUNT).fill(DAY_SHORT[idx]))];
-      lines.push(dayRow.join(","));
     }
-    const tzRow = ["America/Los_Angeles", ...DAY_ORDER.flatMap(() => SLOT_LABELS)];
+
+    const tzRow = ["America/Los_Angeles", ...DAY_ORDER.flatMap(() => CSV_SLOT_LABELS)];
     lines.push(tzRow.join(","));
+
     lines.push(["Chat", ...DAY_ORDER.flatMap((di) => chatMatrix.map((row) => fmt(row[di])))].join(","));
     lines.push(["Email", ...DAY_ORDER.flatMap((di) => emailMatrix.map((row) => fmt(row[di])))].join(","));
     lines.push(["Chat (Only Chat Segments)", ...DAY_ORDER.flatMap((di) => chatMatrix.map((row) => fmt(row[di])))].join(","));
@@ -77,7 +86,7 @@ export default function LaborPlanTable({
     a.download = "labor_plan.csv";
     a.click();
     URL.revokeObjectURL(url);
-  }, [chatMatrix, emailMatrix, teamLabel, dayDates]);
+  }, [chatMatrix, emailMatrix, dayDates]);
 
   const heatBg = (v: number, mx: number, tier: 0 | 1 | 2) => {
     if (v === 0 || mx === 0) return "";
@@ -117,7 +126,7 @@ export default function LaborPlanTable({
       <div className="overflow-x-auto">
         <table className="text-[10px] w-max border-collapse">
           <thead>
-            {/* Row 1: Team label + date spans per day */}
+            {/* Row 1: Date spans per day */}
             <tr className="bg-slate-50 dark:bg-slate-800/50">
               <th className="sticky left-0 z-20 bg-slate-50 dark:bg-slate-800/50 px-3 py-2 text-left text-[10px] font-semibold text-slate-700 dark:text-slate-300 whitespace-nowrap border-r border-b border-slate-200 dark:border-slate-700 min-w-[180px]">
                 {teamLabel}
@@ -138,7 +147,7 @@ export default function LaborPlanTable({
                 America/Los_Angeles
               </th>
               {DAY_ORDER.map((_, dayIdx) =>
-                SLOT_LABELS.map((slot, si) => (
+                UI_SLOT_LABELS.map((slot, si) => (
                   <th
                     key={`tz-${dayIdx}-${si}`}
                     className={`px-0 py-1.5 text-center text-[7.5px] font-mono text-slate-400 dark:text-slate-500 whitespace-nowrap border-b border-slate-100 dark:border-slate-800 ${si === 0 ? "border-l border-slate-200 dark:border-slate-700" : ""}`}
@@ -204,7 +213,7 @@ function DataRow({
             <td
               key={`${dayIdx}-${si}`}
               className={`px-0 py-1 text-center text-[9px] tabular-nums whitespace-nowrap ${bg} text-slate-600 dark:text-slate-400 ${si === 0 ? "border-l border-slate-200 dark:border-slate-700" : ""}`}
-              title={`${DAY_SHORT[dayIdx]} ${SLOT_LABELS[si]}: ${fmt(v)}`}
+              title={`${DAY_SHORT[dayIdx]} ${CSV_SLOT_LABELS[si]}: ${fmt(v)}`}
             >
               {fmt(v)}
             </td>
