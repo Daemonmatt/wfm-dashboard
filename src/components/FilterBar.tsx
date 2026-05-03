@@ -9,8 +9,8 @@ interface FilterBarProps {
   selectedTeam: string;
   onTeamChange: (team: string) => void;
   specializations: string[];
-  selectedSpecialization: string;
-  onSpecializationChange: (spec: string) => void;
+  selectedSpecializations: string[];
+  onSpecializationsChange: (specs: string[]) => void;
   origins: string[];
   selectedOrigins: string[];
   onOriginsChange: (origins: string[]) => void;
@@ -34,8 +34,8 @@ export default function FilterBar({
   selectedTeam,
   onTeamChange,
   specializations,
-  selectedSpecialization,
-  onSpecializationChange,
+  selectedSpecializations,
+  onSpecializationsChange,
   origins,
   selectedOrigins,
   onOriginsChange,
@@ -67,19 +67,23 @@ export default function FilterBar({
 
       {specializations.length > 0 && (
         <Field label="Specialization">
-          <select value={selectedSpecialization} onChange={(e) => onSpecializationChange(e.target.value)} disabled={disabled} className={selectClass}>
-            <option value="__all__">All Specializations</option>
-            {specializations.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
+          <MultiSelect
+            options={specializations}
+            selected={selectedSpecializations}
+            onChange={onSpecializationsChange}
+            disabled={disabled}
+            allLabel="All Specializations"
+          />
         </Field>
       )}
 
       <Field label="Origin">
-        <OriginMultiSelect
-          origins={origins}
+        <MultiSelect
+          options={origins}
           selected={selectedOrigins}
           onChange={onOriginsChange}
           disabled={disabled}
+          allLabel="All Origins"
         />
       </Field>
 
@@ -136,18 +140,20 @@ export default function FilterBar({
   );
 }
 
-/* ── Origin multi-select dropdown with checkboxes ── */
+/* ── Generic multi-select dropdown with checkboxes ── */
 
-function OriginMultiSelect({
-  origins,
+function MultiSelect({
+  options,
   selected,
   onChange,
   disabled,
+  allLabel,
 }: {
-  origins: string[];
+  options: string[];
   selected: string[];
   onChange: (v: string[]) => void;
   disabled: boolean;
+  allLabel: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -162,12 +168,12 @@ function OriginMultiSelect({
 
   const allSelected = selected.length === 0;
   const label = allSelected
-    ? "All Origins"
+    ? allLabel
     : selected.length === 1
       ? selected[0]
       : `${selected.length} selected`;
 
-  const toggleOrigin = (o: string) => {
+  const toggleItem = (o: string) => {
     if (selected.includes(o)) {
       onChange(selected.filter((s) => s !== o));
     } else {
@@ -192,17 +198,17 @@ function OriginMultiSelect({
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 z-50 mt-1 min-w-[140px] rounded-md border border-slate-200 bg-white shadow-lg dark:border-slate-600 dark:bg-slate-800">
-          <label className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer border-b border-slate-100 dark:border-slate-700">
+        <div className="absolute top-full left-0 z-50 mt-1 min-w-[140px] max-h-60 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg dark:border-slate-600 dark:bg-slate-800">
+          <label className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer border-b border-slate-100 dark:border-slate-700 sticky top-0 bg-white dark:bg-slate-800">
             <input
               type="checkbox"
               checked={allSelected}
               onChange={selectAll}
               className="h-3 w-3 rounded border-slate-300 text-[#2563eb] focus:ring-[#2563eb]/25 accent-[#2563eb]"
             />
-            <span className="font-medium">All Origins</span>
+            <span className="font-medium">{allLabel}</span>
           </label>
-          {origins.map((o) => (
+          {options.map((o) => (
             <label
               key={o}
               className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer"
@@ -210,7 +216,7 @@ function OriginMultiSelect({
               <input
                 type="checkbox"
                 checked={!allSelected && selected.includes(o)}
-                onChange={() => toggleOrigin(o)}
+                onChange={() => toggleItem(o)}
                 className="h-3 w-3 rounded border-slate-300 text-[#2563eb] focus:ring-[#2563eb]/25 accent-[#2563eb]"
               />
               {o}

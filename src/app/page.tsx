@@ -34,7 +34,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
 
   const [selectedTeam, setSelectedTeam] = useState("__all__");
-  const [selectedSpecialization, setSelectedSpecialization] = useState("__all__");
+  const [selectedSpecializations, setSelectedSpecializations] = useState<string[]>([]);
   const [selectedOrigins, setSelectedOrigins] = useState<string[]>([]);
   const [forecastModel, setForecastModel] = useState<ForecastModel>("hw_enhanced");
   const [staffingModel, setStaffingModel] = useState<StaffingModel>("erlang_c");
@@ -71,7 +71,7 @@ export default function Home() {
         setParseResult(result);
         setFileName(name);
         setSelectedTeam("__all__");
-        setSelectedSpecialization("__all__");
+        setSelectedSpecializations([]);
         setSelectedOrigins([]);
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : "Failed to parse file");
@@ -84,7 +84,7 @@ export default function Home() {
   );
 
   const team = selectedTeam === "__all__" ? undefined : selectedTeam;
-  const spec = selectedSpecialization === "__all__" ? undefined : selectedSpecialization;
+  const spec: string[] | undefined = selectedSpecializations.length === 0 ? undefined : selectedSpecializations;
   const originFilter: string[] | undefined = selectedOrigins.length === 0 ? undefined : selectedOrigins;
   const teamLabel = selectedTeam === "__all__" ? "All Teams" : selectedTeam;
 
@@ -102,8 +102,8 @@ export default function Home() {
     return Array.from(set).sort();
   }, [parseResult, team]);
 
-  // If the team changes and the previously-selected specialization isn't available
-  // for the new team, reset it to "All".
+  // If the team changes, drop any selected specializations that aren't valid
+  // for the new team. If none remain, the dropdown effectively shows "All".
   const handleTeamChange = useCallback(
     (newTeam: string) => {
       setSelectedTeam(newTeam);
@@ -114,11 +114,9 @@ export default function Home() {
       for (const r of parseResult.rows) {
         if (r.team === newTeam) allowed.add(r.specialization);
       }
-      if (selectedSpecialization !== "__all__" && !allowed.has(selectedSpecialization)) {
-        setSelectedSpecialization("__all__");
-      }
+      setSelectedSpecializations((prev) => prev.filter((s) => allowed.has(s)));
     },
-    [parseResult, selectedSpecialization]
+    [parseResult]
   );
 
   // --- Per-origin arrival + forecast (always computed for blended AHT and blended staffing) ---
@@ -256,7 +254,7 @@ export default function Home() {
     : (STAFFING_MODELS.find((m) => m.id === staffingModel)?.label ?? "");
   const filterParts: string[] = [];
   if (selectedTeam !== "__all__") filterParts.push(selectedTeam);
-  if (selectedSpecialization !== "__all__") filterParts.push(selectedSpecialization);
+  if (selectedSpecializations.length > 0) filterParts.push(selectedSpecializations.join(", "));
   if (selectedOrigins.length > 0) filterParts.push(selectedOrigins.join(", "));
   const filterLabel = filterParts.length > 0 ? ` \u2014 ${filterParts.join(" / ")}` : "";
   const concLabel = isOnlyChat && staffingParams.concurrency > 1 ? `, Concurrency: ${staffingParams.concurrency}` : "";
@@ -339,8 +337,8 @@ export default function Home() {
               selectedTeam={selectedTeam}
               onTeamChange={handleTeamChange}
               specializations={availableSpecializations}
-              selectedSpecialization={selectedSpecialization}
-              onSpecializationChange={setSelectedSpecialization}
+              selectedSpecializations={selectedSpecializations}
+              onSpecializationsChange={setSelectedSpecializations}
               origins={parseResult.origins}
               selectedOrigins={selectedOrigins}
               onOriginsChange={handleOriginsChange}
