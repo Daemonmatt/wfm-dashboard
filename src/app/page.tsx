@@ -34,6 +34,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
 
   const [selectedTeam, setSelectedTeam] = useState("__all__");
+  const [selectedSpecialization, setSelectedSpecialization] = useState("__all__");
   const [selectedOrigins, setSelectedOrigins] = useState<string[]>([]);
   const [forecastModel, setForecastModel] = useState<ForecastModel>("hw_enhanced");
   const [staffingModel, setStaffingModel] = useState<StaffingModel>("erlang_c");
@@ -70,6 +71,7 @@ export default function Home() {
         setParseResult(result);
         setFileName(name);
         setSelectedTeam("__all__");
+        setSelectedSpecialization("__all__");
         setSelectedOrigins([]);
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : "Failed to parse file");
@@ -82,19 +84,53 @@ export default function Home() {
   );
 
   const team = selectedTeam === "__all__" ? undefined : selectedTeam;
+  const spec = selectedSpecialization === "__all__" ? undefined : selectedSpecialization;
   const originFilter: string[] | undefined = selectedOrigins.length === 0 ? undefined : selectedOrigins;
   const teamLabel = selectedTeam === "__all__" ? "All Teams" : selectedTeam;
+
+  // Specializations available given the currently-selected team.
+  // When a team is selected we only show specializations that have rows for that team.
+  const availableSpecializations = useMemo(() => {
+    if (!parseResult) return [];
+    if (!team) return parseResult.specializations;
+    const set = new Set<string>();
+    for (const r of parseResult.rows) {
+      if (r.team === team && r.specialization && r.specialization !== "Unknown") {
+        set.add(r.specialization);
+      }
+    }
+    return Array.from(set).sort();
+  }, [parseResult, team]);
+
+  // If the team changes and the previously-selected specialization isn't available
+  // for the new team, reset it to "All".
+  const handleTeamChange = useCallback(
+    (newTeam: string) => {
+      setSelectedTeam(newTeam);
+      if (newTeam === "__all__" || !parseResult) {
+        return;
+      }
+      const allowed = new Set<string>();
+      for (const r of parseResult.rows) {
+        if (r.team === newTeam) allowed.add(r.specialization);
+      }
+      if (selectedSpecialization !== "__all__" && !allowed.has(selectedSpecialization)) {
+        setSelectedSpecialization("__all__");
+      }
+    },
+    [parseResult, selectedSpecialization]
+  );
 
   // --- Per-origin arrival + forecast (always computed for blended AHT and blended staffing) ---
   const chatArrivalHourly = useMemo(() => {
     if (!parseResult) return null;
-    return computeArrivalPattern(parseResult.rows, team, "Chat");
-  }, [parseResult, team]);
+    return computeArrivalPattern(parseResult.rows, team, "Chat", spec);
+  }, [parseResult, team, spec]);
 
   const emailArrivalHourly = useMemo(() => {
     if (!parseResult) return null;
-    return computeArrivalPattern(parseResult.rows, team, "Email");
-  }, [parseResult, team]);
+    return computeArrivalPattern(parseResult.rows, team, "Email", spec);
+  }, [parseResult, team, spec]);
 
   const mf = staffingParams.multiplyFactor;
 
@@ -110,13 +146,13 @@ export default function Home() {
 
   const chatArrival15 = useMemo(() => {
     if (!parseResult) return null;
-    return computeArrivalPattern15(parseResult.rows, team, "Chat");
-  }, [parseResult, team]);
+    return computeArrivalPattern15(parseResult.rows, team, "Chat", spec);
+  }, [parseResult, team, spec]);
 
   const emailArrival15 = useMemo(() => {
     if (!parseResult) return null;
-    return computeArrivalPattern15(parseResult.rows, team, "Email");
-  }, [parseResult, team]);
+    return computeArrivalPattern15(parseResult.rows, team, "Email", spec);
+  }, [parseResult, team, spec]);
 
   const chatForecast15 = useMemo(() => {
     if (!chatArrival15) return null;
@@ -159,8 +195,8 @@ export default function Home() {
   // --- Hourly pipeline (24x7) ---
   const arrivalData = useMemo(() => {
     if (!parseResult) return null;
-    return computeArrivalPattern(parseResult.rows, team, originFilter);
-  }, [parseResult, team, originFilter]);
+    return computeArrivalPattern(parseResult.rows, team, originFilter, spec);
+  }, [parseResult, team, originFilter, spec]);
 
   const forecastMatrix = useMemo(() => {
     if (!arrivalData) return null;
@@ -182,8 +218,8 @@ export default function Home() {
   // --- 15-min pipeline (96x7) ---
   const arrivalData15 = useMemo(() => {
     if (!parseResult) return null;
-    return computeArrivalPattern15(parseResult.rows, team, originFilter);
-  }, [parseResult, team, originFilter]);
+    return computeArrivalPattern15(parseResult.rows, team, originFilter, spec);
+  }, [parseResult, team, originFilter, spec]);
 
   const forecastMatrix15 = useMemo(() => {
     if (!arrivalData15) return null;
@@ -220,6 +256,7 @@ export default function Home() {
     : (STAFFING_MODELS.find((m) => m.id === staffingModel)?.label ?? "");
   const filterParts: string[] = [];
   if (selectedTeam !== "__all__") filterParts.push(selectedTeam);
+  if (selectedSpecialization !== "__all__") filterParts.push(selectedSpecialization);
   if (selectedOrigins.length > 0) filterParts.push(selectedOrigins.join(", "));
   const filterLabel = filterParts.length > 0 ? ` \u2014 ${filterParts.join(" / ")}` : "";
   const concLabel = isOnlyChat && staffingParams.concurrency > 1 ? `, Concurrency: ${staffingParams.concurrency}` : "";
@@ -300,7 +337,10 @@ export default function Home() {
             <FilterBar
               teams={parseResult.teams}
               selectedTeam={selectedTeam}
-              onTeamChange={setSelectedTeam}
+              onTeamChange={handleTeamChange}
+              specializations={availableSpecializations}
+              selectedSpecialization={selectedSpecialization}
+              onSpecializationChange={setSelectedSpecialization}
               origins={parseResult.origins}
               selectedOrigins={selectedOrigins}
               onOriginsChange={handleOriginsChange}

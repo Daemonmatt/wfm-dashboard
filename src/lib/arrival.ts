@@ -33,7 +33,7 @@ function getWeekKey(localDate: string, dayOfWeek: number): string {
   return `${sy}-${sm}-${sd}`;
 }
 
-function filterRows(rows: ParsedRow[], team?: string, origin?: string | string[]): ParsedRow[] {
+function filterRows(rows: ParsedRow[], team?: string, origin?: string | string[], specialization?: string): ParsedRow[] {
   let filtered = rows;
   if (team) filtered = filtered.filter((r) => r.team === team);
   if (origin) {
@@ -44,6 +44,7 @@ function filterRows(rows: ParsedRow[], team?: string, origin?: string | string[]
       filtered = filtered.filter((r) => r.origin === origin);
     }
   }
+  if (specialization) filtered = filtered.filter((r) => r.specialization === specialization);
   return filtered;
 }
 
@@ -51,9 +52,10 @@ function filterRows(rows: ParsedRow[], team?: string, origin?: string | string[]
 export function computeArrivalPattern(
   rows: ParsedRow[],
   team?: string,
-  origin?: string | string[]
+  origin?: string | string[],
+  specialization?: string,
 ): { matrix: ArrivalMatrix; weeklyBreakdown: WeeklyBreakdown; weekCount: number } {
-  const filtered = filterRows(rows, team, origin);
+  const filtered = filterRows(rows, team, origin, specialization);
   const weeklyBreakdown: WeeklyBreakdown = {};
   const weekSet = new Set<string>();
 
@@ -78,9 +80,10 @@ export function computeArrivalPattern(
 export function computeArrivalPattern15(
   rows: ParsedRow[],
   team?: string,
-  origin?: string | string[]
+  origin?: string | string[],
+  specialization?: string,
 ): { matrix: ArrivalMatrix; weeklyBreakdown: WeeklyBreakdown; weekCount: number } {
-  const filtered = filterRows(rows, team, origin);
+  const filtered = filterRows(rows, team, origin, specialization);
   const weeklyBreakdown: WeeklyBreakdown = {};
   const weekSet = new Set<string>();
 

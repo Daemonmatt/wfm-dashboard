@@ -8,6 +8,9 @@ interface FilterBarProps {
   teams: string[];
   selectedTeam: string;
   onTeamChange: (team: string) => void;
+  specializations: string[];
+  selectedSpecialization: string;
+  onSpecializationChange: (spec: string) => void;
   origins: string[];
   selectedOrigins: string[];
   onOriginsChange: (origins: string[]) => void;
@@ -30,6 +33,9 @@ export default function FilterBar({
   teams,
   selectedTeam,
   onTeamChange,
+  specializations,
+  selectedSpecialization,
+  onSpecializationChange,
   origins,
   selectedOrigins,
   onOriginsChange,
@@ -58,6 +64,15 @@ export default function FilterBar({
           {teams.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
       </Field>
+
+      {specializations.length > 0 && (
+        <Field label="Specialization">
+          <select value={selectedSpecialization} onChange={(e) => onSpecializationChange(e.target.value)} disabled={disabled} className={selectClass}>
+            <option value="__all__">All Specializations</option>
+            {specializations.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </Field>
+      )}
 
       <Field label="Origin">
         <OriginMultiSelect

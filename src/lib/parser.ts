@@ -10,12 +10,14 @@ export interface ParsedRow {
   localDate: string;
   team: string;
   origin: string;
+  specialization: string;
 }
 
 export interface ParseResult {
   rows: ParsedRow[];
   teams: string[];
   origins: string[];
+  specializations: string[];
   dateRange: { min: Date; max: Date };
   totalRows: number;
 }
@@ -99,6 +101,16 @@ export async function parseFile(
   ]);
   const teamIdx = findColumn(headers, ["team", "team_name", "Team"]);
   const originIdx = findColumn(headers, ["origin", "Origin", "channel", "Channel"]);
+  const specIdx = findColumn(headers, [
+    "case_specialization",
+    "Case Specialization",
+    "case specialization",
+    "specialization",
+    "Specialization",
+    "specialization_name",
+    "spec",
+    "Spec",
+  ]);
 
   if (createdIdx === -1) {
     throw new Error(
@@ -116,6 +128,7 @@ export async function parseFile(
   const rows: ParsedRow[] = [];
   const teamSet = new Set<string>();
   const originSet = new Set<string>();
+  const specSet = new Set<string>();
   let minDate: Date | null = null;
   let maxDate: Date | null = null;
 
@@ -127,6 +140,8 @@ export async function parseFile(
     const team = String(row[teamIdx] ?? "").trim();
     const origin =
       originIdx !== -1 ? String(row[originIdx] ?? "").trim() : "";
+    const specialization =
+      specIdx !== -1 ? String(row[specIdx] ?? "").trim() : "";
 
     if (!parts || !team) continue;
 
@@ -140,9 +155,11 @@ export async function parseFile(
       localDate: parts.localDate,
       team,
       origin: origin || "Unknown",
+      specialization: specialization || "Unknown",
     });
     teamSet.add(team);
     if (origin) originSet.add(origin);
+    if (specialization) specSet.add(specialization);
 
     if (!minDate || parts.date < minDate) minDate = parts.date;
     if (!maxDate || parts.date > maxDate) maxDate = parts.date;
@@ -156,6 +173,7 @@ export async function parseFile(
     rows,
     teams: Array.from(teamSet).sort(),
     origins: Array.from(originSet).sort(),
+    specializations: Array.from(specSet).sort(),
     dateRange: { min: minDate!, max: maxDate! },
     totalRows: rows.length,
   };
