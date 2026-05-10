@@ -166,7 +166,9 @@ function MultiSelect({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const allSelected = selected.length === 0;
+  // "All" is true either when nothing is explicitly chosen (canonical empty
+  // means "no filter") or when every option is individually chosen.
+  const allSelected = selected.length === 0 || selected.length === options.length;
   const label = allSelected
     ? allLabel
     : selected.length === 1
@@ -174,11 +176,18 @@ function MultiSelect({
       : `${selected.length} selected`;
 
   const toggleItem = (o: string) => {
-    if (selected.includes(o)) {
-      onChange(selected.filter((s) => s !== o));
+    let next: string[];
+    if (allSelected) {
+      // Currently treated as all-selected → clicking an item deselects just that one.
+      next = options.filter((opt) => opt !== o);
+    } else if (selected.includes(o)) {
+      next = selected.filter((s) => s !== o);
     } else {
-      onChange([...selected, o]);
+      next = [...selected, o];
     }
+    // Normalize to canonical "all" (empty array) when every option is in the list.
+    if (next.length === options.length) next = [];
+    onChange(next);
   };
 
   const selectAll = () => onChange([]);
@@ -215,7 +224,7 @@ function MultiSelect({
             >
               <input
                 type="checkbox"
-                checked={!allSelected && selected.includes(o)}
+                checked={allSelected || selected.includes(o)}
                 onChange={() => toggleItem(o)}
                 className="h-3 w-3 rounded border-slate-300 text-[#2563eb] focus:ring-[#2563eb]/25 accent-[#2563eb]"
               />
