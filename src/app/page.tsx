@@ -68,11 +68,13 @@ export default function Home() {
   const [selectedSpecializations, setSelectedSpecializations] = useState<string[]>([]);
   const [selectedOrigins, setSelectedOrigins] = useState<string[]>([]);
   // Defaults: Double Exponential forecast for every origin selection. The
-  // chat-side staffing uses Erlang-C (with concurrency 2), the email-side
-  // uses Workload Spread Backward, and combined ("All Origins") runs both
-  // paths and sums via calculateBlendedStaffing.
+  // staffing model defaults to "Blended" (Erlang-C on chat + Workload Spread
+  // Back on email, summed) which is the right model for combined volume.
+  // When the user picks a single origin, the Origin-change handler swaps the
+  // staffing model to the right single-stream default (Erlang-C for chat,
+  // Workload Spread Back for email). The dropdown is always honoured.
   const [forecastModel, setForecastModel] = useState<ForecastModel>("double_exp");
-  const [staffingModel, setStaffingModel] = useState<StaffingModel>("erlang_c");
+  const [staffingModel, setStaffingModel] = useState<StaffingModel>("blended");
   const [staffingParams, setStaffingParams] = useState<StaffingParams>({
     ...DEFAULT_STAFFING_PARAMS,
     concurrency: 2,
@@ -124,20 +126,25 @@ export default function Home() {
         return;
       }
 
-      // Multi-origin or "All Origins": blended staffing is applied
-      // automatically when both chat and email are included; the dropdown
-      // model only matters for non-blended (single-origin) selections.
+      // Combined selections (All Origins, or any subset that includes both
+      // chat and email) default to the "Blended" staffing model so chat and
+      // email each get the right queue dynamics. The dropdown is honoured
+      // afterwards — pick a different model and the math switches.
       if (isAllSelected || (includesChat && includesEmail)) {
+        setStaffingModel("blended");
         setStaffingParams((prev) => ({ ...prev, concurrency: 2 }));
         return;
       }
 
-      // Subset that doesn't include chat (e.g., Email + Web): drop concurrency.
-      if (!includesChat) {
-        setStaffingParams((prev) => ({ ...prev, concurrency: 1 }));
-      } else {
-        // Subset that includes chat but not email: keep concurrency 2.
+      // Subset that includes chat but not email: stay on Erlang-C.
+      if (includesChat) {
+        setStaffingModel("erlang_c");
         setStaffingParams((prev) => ({ ...prev, concurrency: 2 }));
+      } else {
+        // Subset that doesn't include chat (e.g., Email + Web): drop
+        // concurrency and use the email-friendly default.
+        setStaffingModel("workload_spread_back");
+        setStaffingParams((prev) => ({ ...prev, concurrency: 1 }));
       }
     },
     [parseResult],
@@ -156,6 +163,10 @@ export default function Home() {
         // starts in an "All ..." state (canonical: every option checked).
         setSelectedSpecializations(result.specializations);
         setSelectedOrigins(result.origins);
+        // Combined volume → Blended staffing by default (Erlang-C for chat
+        // slice + Workload Spread Back for email slice). User can override.
+        setForecastModel("double_exp");
+        setStaffingModel("blended");
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : "Failed to parse file");
         setParseResult(null);
@@ -308,7 +319,9 @@ export default function Home() {
 
   const staffingMatrix = useMemo(() => {
     if (!forecastMatrix) return null;
-    if (isBothIncluded && chatForecastHourly && emailForecastHourly) {
+    // Blended path runs only when the user explicitly picks "blended" from
+    // the staffing dropdown AND both chat and email forecasts are available.
+    if (staffingModel === "blended" && chatForecastHourly && emailForecastHourly) {
       return calculateBlendedStaffing(
         chatForecastHourly, emailForecastHourly,
         { ...staffingParams, intervalMinutes: 60 },
@@ -316,7 +329,7 @@ export default function Home() {
       );
     }
     return calculateStaffing(staffingModel, forecastMatrix, { ...mainParams, intervalMinutes: 60 }, isOnlyChat);
-  }, [forecastMatrix, staffingModel, mainParams, isOnlyChat, isBothIncluded, chatForecastHourly, emailForecastHourly, staffingParams]);
+  }, [forecastMatrix, staffingModel, mainParams, isOnlyChat, chatForecastHourly, emailForecastHourly, staffingParams]);
 
   // --- 15-min pipeline (96x7) ---
   const arrivalData15 = useMemo(() => {
@@ -331,7 +344,7 @@ export default function Home() {
 
   const staffingMatrix15 = useMemo(() => {
     if (!forecastMatrix15) return null;
-    if (isBothIncluded && chatForecast15 && emailForecast15) {
+    if (staffingModel === "blended" && chatForecast15 && emailForecast15) {
       return calculateBlendedStaffing(
         chatForecast15, emailForecast15,
         { ...staffingParams, intervalMinutes: 15 },
@@ -339,7 +352,7 @@ export default function Home() {
       );
     }
     return calculateStaffing(staffingModel, forecastMatrix15, { ...mainParams, intervalMinutes: 15 }, isOnlyChat);
-  }, [forecastMatrix15, staffingModel, mainParams, isOnlyChat, isBothIncluded, chatForecast15, emailForecast15, staffingParams]);
+  }, [forecastMatrix15, staffingModel, mainParams, isOnlyChat, chatForecast15, emailForecast15, staffingParams]);
 
   // --- Per-origin 15-min staffing for Labor Plan ---
   const chatStaffing15 = useMemo(() => {
@@ -419,9 +432,9 @@ export default function Home() {
 
   // --- Labels ---
   const activeForecastLabel = FORECAST_MODELS.find((m) => m.id === forecastModel)?.label ?? "";
-  const activeStaffingLabel = isBothIncluded
-    ? "Blended (Erlang-C + Workload Spread Backward)"
-    : (STAFFING_MODELS.find((m) => m.id === staffingModel)?.label ?? "");
+  // The staffing label always tracks the user's dropdown selection now —
+  // there is no implicit override. "Blended" is just one of the options.
+  const activeStaffingLabel = STAFFING_MODELS.find((m) => m.id === staffingModel)?.label ?? "";
   const filterParts: string[] = [];
   if (selectedTeam !== "__all__") filterParts.push(selectedTeam);
   if (selectedSpecializations.length > 0 && !allSpecsSelected) {

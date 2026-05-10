@@ -1,12 +1,27 @@
 import { ArrivalMatrix } from "./arrival";
 
-export type StaffingModel = "erlang_c" | "erlang_a" | "simple_ratio" | "occupancy" | "production_rate" | "workload" | "workload_spread" | "workload_spread_back";
+export type StaffingModel =
+  | "erlang_c"
+  | "erlang_a"
+  | "simple_ratio"
+  | "occupancy"
+  | "production_rate"
+  | "workload"
+  | "workload_spread"
+  | "workload_spread_back"
+  | "blended";
 
 export const STAFFING_MODELS: {
   id: StaffingModel;
   label: string;
   description: string;
 }[] = [
+  {
+    id: "blended",
+    label: "Blended (Erlang-C + Workload Spread Back)",
+    description:
+      "For combined chat + email volume: Erlang-C on the chat slice, Workload Spread Back on the email slice, summed per slot",
+  },
   {
     id: "erlang_c",
     label: "Erlang-C",
@@ -283,15 +298,15 @@ function calculateWorkloadSpreadBack(
   return result;
 }
 
-const MODEL_FNS: Record<StaffingModel, (v: number, p: StaffingParams) => number> = {
+// Per-cell scoring functions. The "blended" pseudo-model is dispatched
+// separately because it needs both chat and email forecasts.
+const MODEL_FNS: Record<Exclude<StaffingModel, "blended" | "workload_spread" | "workload_spread_back">, (v: number, p: StaffingParams) => number> = {
   erlang_c: erlangCAgents,
   erlang_a: erlangAAgents,
   simple_ratio: simpleRatioAgents,
   occupancy: occupancyAgents,
   production_rate: productionRateAgents,
   workload: workloadAgents,
-  workload_spread: workloadAgents,
-  workload_spread_back: workloadAgents,
 };
 
 export function calculateStaffing(
@@ -305,6 +320,18 @@ export function calculateStaffing(
   }
   if (model === "workload_spread_back") {
     return calculateWorkloadSpreadBack(forecastMatrix, params);
+  }
+  if (model === "blended") {
+    // "blended" requires per-origin matrices; callers should use
+    // calculateBlendedStaffing directly. As a safe fallback when invoked on a
+    // single combined matrix, treat it as Erlang-C with concurrency.
+    const conc = applyConcurrency && params.concurrency > 1 ? params.concurrency : 1;
+    return forecastMatrix.map((row) =>
+      row.map((volume) => {
+        const raw = erlangCAgents(volume, params);
+        return conc > 1 ? Math.ceil(raw / conc) : raw;
+      })
+    );
   }
 
   const calcFn = MODEL_FNS[model];
