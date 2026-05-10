@@ -347,3 +347,37 @@ export function calculateBlendedStaffing(
   }
   return result;
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Yearly (long-term) staffing
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Daily HC required for a 52-week daily forecast. Uses the workload formula
+ * with a configurable operating window (default 8 hours/day) so the result
+ * reflects required FTE assuming volume is spread evenly across the
+ * operating window.
+ *
+ *   HC = ⌈(volume × AHT) / (operatingHoursPerDay × 3600 × occupancy)⌉
+ *        / (1 - shrinkage)
+ *
+ * Returns a matrix the same shape as the input (e.g. 52 × 7).
+ */
+export function calculateYearlyStaffing(
+  yearlyForecast: ArrivalMatrix,
+  params: StaffingParams,
+  operatingHoursPerDay = 8,
+): ArrivalMatrix {
+  const aht = params.ahtSeconds;
+  const occ = params.occupancyPct > 0 ? params.occupancyPct : 0.85;
+  const shrink = params.shrinkagePct;
+  const dailyCapacitySec = operatingHoursPerDay * 3600;
+
+  return yearlyForecast.map((row) =>
+    row.map((vol) => {
+      if (vol <= 0) return 0;
+      const raw = (vol * aht) / (dailyCapacitySec * occ);
+      return Math.ceil(raw / (1 - shrink));
+    }),
+  );
+}

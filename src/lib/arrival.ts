@@ -171,6 +171,109 @@ export function getForecastWeekDatesLong(weeklyBreakdown: WeeklyBreakdown): stri
   return buildForecastDates(weeklyBreakdown, "long");
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Yearly (long-term) forecast helpers
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Per-week daily totals. Each entry holds the Sunday date of the week and
+ * 7 daily totals (index 0 = Sun ... 6 = Sat).
+ */
+export interface WeeklyDailyData {
+  weekStartDate: string; // YYYY-MM-DD (Sunday)
+  dailyTotals: number[]; // length 7
+}
+
+/**
+ * Aggregate raw rows to historical weekly daily totals: one entry per week
+ * found in the data, each with 7 daily totals.
+ */
+export function computeWeeklyDailyTotals(
+  rows: ParsedRow[],
+  team?: string,
+  origin?: string | string[],
+  specialization?: string | string[],
+): WeeklyDailyData[] {
+  const filtered = filterRows(rows, team, origin, specialization);
+  const byWeek: Record<string, number[]> = {};
+
+  for (const row of filtered) {
+    const wk = getWeekKey(row.localDate, row.dayOfWeek);
+    if (!byWeek[wk]) byWeek[wk] = Array(7).fill(0);
+    byWeek[wk][row.dayOfWeek]++;
+  }
+
+  return Object.keys(byWeek)
+    .sort()
+    .map((wk) => ({ weekStartDate: wk, dailyTotals: byWeek[wk] }));
+}
+
+/**
+ * Returns the Sunday date that starts the first forecasted week
+ * (i.e., the Sunday after the last historical week).
+ */
+export function getForecastYearStart(history: WeeklyDailyData[]): Date {
+  if (history.length === 0) {
+    const today = new Date();
+    today.setDate(today.getDate() - today.getDay());
+    return today;
+  }
+  const last = history[history.length - 1].weekStartDate;
+  const [y, m, d] = last.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + 7);
+  return dt;
+}
+
+const MONTHS_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * Format the start date of forecast week N (0..51) as e.g. "W1 May 11".
+ */
+export function formatYearWeek(weekIdx: number, baseSunday: Date): string {
+  const dt = new Date(baseSunday);
+  dt.setDate(dt.getDate() + weekIdx * 7);
+  return `W${weekIdx + 1} ${MONTHS_ABBR[dt.getMonth()]} ${String(dt.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Build the 12 calendar months starting from the forecast year start.
+ * Each entry: { label: "May 26", year, month, weekDayIndices: [{week, day}] }
+ * The weekDayIndices list maps cells of the 52x7 forecast matrix back to the
+ * calendar month, so we can aggregate volume/HC totals by month.
+ */
+export interface MonthlyBucket {
+  label: string;
+  year: number;
+  month: number; // 0..11
+  cells: { week: number; day: number }[];
+}
+
+export function buildMonthlyBuckets(baseSunday: Date, weeks = 52): MonthlyBucket[] {
+  const buckets = new Map<string, MonthlyBucket>();
+
+  for (let w = 0; w < weeks; w++) {
+    for (let d = 0; d < 7; d++) {
+      const dt = new Date(baseSunday);
+      dt.setDate(dt.getDate() + w * 7 + d);
+      const key = `${dt.getFullYear()}-${dt.getMonth()}`;
+      if (!buckets.has(key)) {
+        buckets.set(key, {
+          label: `${MONTHS_ABBR[dt.getMonth()]} ${String(dt.getFullYear()).slice(2)}`,
+          year: dt.getFullYear(),
+          month: dt.getMonth(),
+          cells: [],
+        });
+      }
+      buckets.get(key)!.cells.push({ week: w, day: d });
+    }
+  }
+
+  return Array.from(buckets.values()).sort((a, b) =>
+    a.year !== b.year ? a.year - b.year : a.month - b.month,
+  );
+}
+
 function buildForecastDates(weeklyBreakdown: WeeklyBreakdown, style: "short" | "long"): string[] {
   const weeks = Object.keys(weeklyBreakdown).sort();
   if (weeks.length === 0) return Array(7).fill("");

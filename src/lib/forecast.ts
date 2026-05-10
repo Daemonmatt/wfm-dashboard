@@ -1,4 +1,4 @@
-import { ArrivalMatrix, WeeklyBreakdown } from "./arrival";
+import { ArrivalMatrix, WeeklyBreakdown, WeeklyDailyData } from "./arrival";
 
 export type ForecastModel = "wma" | "holt_winters" | "hw_enhanced" | "sarima" | "sma" | "linear_regression" | "double_exp";
 
@@ -383,4 +383,68 @@ export function forecastVolume(
     default:
       return simpleMovingAverage(arrivalMatrix);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Yearly (52-week) daily forecast
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * IQR-based outlier capping (same logic used by Holt-Winters Enhanced).
+ */
+function capSeries(values: number[]): number[] {
+  if (values.length < 4) return values;
+  const sorted = [...values].sort((a, b) => a - b);
+  const q1 = sorted[Math.floor(sorted.length * 0.25)];
+  const q3 = sorted[Math.floor(sorted.length * 0.75)];
+  const iqr = q3 - q1;
+  const lo = q1 - 1.5 * iqr;
+  const hi = q3 + 1.5 * iqr;
+  return values.map((v) => Math.max(lo, Math.min(hi, v)));
+}
+
+/**
+ * Damped-trend exponential smoothing forecast for h steps ahead.
+ */
+function dampedHoltForecast(series: number[], horizon: number, alpha = 0.3, beta = 0.15, phi = 0.85): number[] {
+  const n = series.length;
+  if (n === 0) return Array(horizon).fill(0);
+  if (n === 1) return Array(horizon).fill(series[0]);
+
+  let level = series[0];
+  let trend = series[1] - series[0];
+
+  for (let t = 1; t < n; t++) {
+    const prevLevel = level;
+    level = alpha * series[t] + (1 - alpha) * (prevLevel + phi * trend);
+    trend = beta * (level - prevLevel) + (1 - beta) * phi * trend;
+  }
+
+  const out = new Array(horizon).fill(0);
+  let dampedSum = 0;
+  for (let h = 0; h < horizon; h++) {
+    dampedSum += Math.pow(phi, h + 1);
+    out[h] = Math.max(0, Math.round(level + dampedSum * trend));
+  }
+  return out;
+}
+
+/**
+ * Forecast 52 weeks of daily volumes. Returns a 52x7 matrix (rows = future
+ * weeks, cols = day-of-week 0..6). For each day-of-week, a separate damped-
+ * trend Holt model is fit on the historical weekly daily totals.
+ */
+export function forecastYearlyDaily(history: WeeklyDailyData[], weeks = 52): number[][] {
+  const result: number[][] = Array.from({ length: weeks }, () => Array(7).fill(0));
+  if (history.length === 0) return result;
+
+  for (let d = 0; d < 7; d++) {
+    const raw = history.map((wk) => wk.dailyTotals[d]);
+    const series = capSeries(raw);
+    const forecast = dampedHoltForecast(series, weeks);
+    for (let w = 0; w < weeks; w++) {
+      result[w][d] = forecast[w];
+    }
+  }
+  return result;
 }

@@ -7,20 +7,34 @@ import ArrivalTable from "@/components/ArrivalTable";
 import DistributionTable from "@/components/DistributionTable";
 import SummaryCards from "@/components/SummaryCards";
 import LaborPlanTable from "@/components/LaborPlanTable";
+import MonthlySummaryCards from "@/components/MonthlySummaryCards";
 import { parseFile, ParseResult } from "@/lib/parser";
-import { computeArrivalPattern, computeArrivalPattern15, formatHour, formatSlot, getMatrixTotal, getForecastWeekDates, getForecastWeekDatesLong } from "@/lib/arrival";
-import { ForecastModel, forecastVolume, FORECAST_MODELS } from "@/lib/forecast";
+import {
+  computeArrivalPattern,
+  computeArrivalPattern15,
+  computeWeeklyDailyTotals,
+  formatHour,
+  formatSlot,
+  formatYearWeek,
+  getMatrixTotal,
+  getForecastWeekDates,
+  getForecastWeekDatesLong,
+  getForecastYearStart,
+  buildMonthlyBuckets,
+} from "@/lib/arrival";
+import { ForecastModel, forecastVolume, forecastYearlyDaily, FORECAST_MODELS } from "@/lib/forecast";
 import { ArrivalMatrix } from "@/lib/arrival";
 import {
   StaffingModel,
   calculateStaffing,
   calculateBlendedStaffing,
+  calculateYearlyStaffing,
   StaffingParams,
   DEFAULT_STAFFING_PARAMS,
   STAFFING_MODELS,
 } from "@/lib/staffing";
 
-type TabId = "hourly" | "15min";
+type TabId = "hourly" | "15min" | "yearly";
 
 function applyFactor(matrix: ArrivalMatrix, factor: number): ArrivalMatrix {
   if (factor === 1) return matrix;
@@ -247,6 +261,40 @@ export default function Home() {
     return calculateStaffing("workload_spread_back", emailForecast15, { ...emailParams, intervalMinutes: 15 }, false);
   }, [emailForecast15, emailParams]);
 
+  // --- Yearly pipeline (52 weeks x 7 days) ---
+  const yearlyHistory = useMemo(() => {
+    if (!parseResult) return null;
+    return computeWeeklyDailyTotals(parseResult.rows, team, originFilter, spec);
+  }, [parseResult, team, originFilter, spec]);
+
+  const yearlyForecast = useMemo(() => {
+    if (!yearlyHistory) return null;
+    return applyFactor(forecastYearlyDaily(yearlyHistory, 52), mf);
+  }, [yearlyHistory, mf]);
+
+  const yearlyStaffing = useMemo(() => {
+    if (!yearlyForecast) return null;
+    return calculateYearlyStaffing(yearlyForecast, mainParams, 8);
+  }, [yearlyForecast, mainParams]);
+
+  const yearStartDate = useMemo(() => {
+    if (!yearlyHistory) return null;
+    return getForecastYearStart(yearlyHistory);
+  }, [yearlyHistory]);
+
+  const monthlyBuckets = useMemo(() => {
+    if (!yearStartDate) return null;
+    return buildMonthlyBuckets(yearStartDate, 52);
+  }, [yearStartDate]);
+
+  const formatYearRow = useCallback(
+    (idx: number) => {
+      if (!yearStartDate) return `W${idx + 1}`;
+      return formatYearWeek(idx, yearStartDate);
+    },
+    [yearStartDate],
+  );
+
   // --- Labels ---
   const activeForecastLabel = FORECAST_MODELS.find((m) => m.id === forecastModel)?.label ?? "";
   const activeStaffingLabel = isBothIncluded
@@ -376,6 +424,7 @@ export default function Home() {
               {([
                 { id: "hourly" as TabId, label: "Hourly Requirement" },
                 { id: "15min" as TabId, label: "15 Min Requirement" },
+                { id: "yearly" as TabId, label: "Yearly Forecast" },
               ]).map((tab) => (
                 <button
                   key={tab.id}
@@ -391,7 +440,41 @@ export default function Home() {
               ))}
             </div>
 
-            {hasData && (
+            {activeTab === "yearly" && yearlyForecast && yearlyStaffing && monthlyBuckets && yearlyHistory && (
+              <div className="space-y-4">
+                <MonthlySummaryCards
+                  buckets={monthlyBuckets}
+                  volumeMatrix={yearlyForecast}
+                  hcMatrix={yearlyStaffing}
+                />
+
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                  <ArrivalTable
+                    title="Yearly Volume Forecast"
+                    subtitle={`Damped-trend daily forecast${factorLabel}${filterLabel} (52 wk, ${yearlyHistory.length} wk history)`}
+                    matrix={yearlyForecast}
+                    colorScheme="teal"
+                    formatRowLabel={formatYearRow}
+                  />
+                  <ArrivalTable
+                    title="Yearly Headcount Required"
+                    subtitle={`Workload (8h/day, ${ahtLabel}, Shrink ${Math.round(staffingParams.shrinkagePct * 100)}%, Occ ${Math.round(staffingParams.occupancyPct * 100)}%)${filterLabel}`}
+                    matrix={yearlyStaffing}
+                    colorScheme="rust"
+                    usePeakTotals
+                    formatRowLabel={formatYearRow}
+                  />
+                </div>
+
+                {yearlyHistory.length < 8 && (
+                  <p className="text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2">
+                    Long-term forecast quality improves with more history. You currently have {yearlyHistory.length} week{yearlyHistory.length === 1 ? "" : "s"} of data — yearly seasonality and major shifts can&rsquo;t be inferred from short windows. The model uses damped-trend smoothing per day-of-week to project conservative trajectories.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {activeTab !== "yearly" && hasData && (
               <div className="space-y-4">
                 <SummaryCards
                   arrivalMatrix={aData.matrix}
