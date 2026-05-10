@@ -166,31 +166,34 @@ function MultiSelect({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // "All" is true either when nothing is explicitly chosen (canonical empty
-  // means "no filter") or when every option is individually chosen.
-  const allSelected = selected.length === 0 || selected.length === options.length;
+  // `selected` is the explicit list of checked items.
+  // "All" is true only when every option is individually selected.
+  const allSelected = options.length > 0 && selected.length === options.length;
+  const noneSelected = selected.length === 0;
   const label = allSelected
     ? allLabel
-    : selected.length === 1
-      ? selected[0]
-      : `${selected.length} selected`;
+    : noneSelected
+      ? "None selected"
+      : selected.length === 1
+        ? selected[0]
+        : `${selected.length} selected`;
 
   const toggleItem = (o: string) => {
-    let next: string[];
-    if (allSelected) {
-      // Currently treated as all-selected → clicking an item deselects just that one.
-      next = options.filter((opt) => opt !== o);
-    } else if (selected.includes(o)) {
-      next = selected.filter((s) => s !== o);
+    if (selected.includes(o)) {
+      onChange(selected.filter((s) => s !== o));
     } else {
-      next = [...selected, o];
+      onChange([...selected, o]);
     }
-    // Normalize to canonical "all" (empty array) when every option is in the list.
-    if (next.length === options.length) next = [];
-    onChange(next);
   };
 
-  const selectAll = () => onChange([]);
+  // Toggle "All": if everything is selected, clear; otherwise select every option.
+  const toggleAll = () => {
+    if (allSelected) {
+      onChange([]);
+    } else {
+      onChange([...options]);
+    }
+  };
 
   return (
     <div ref={ref} className="relative">
@@ -212,7 +215,7 @@ function MultiSelect({
             <input
               type="checkbox"
               checked={allSelected}
-              onChange={selectAll}
+              onChange={toggleAll}
               className="h-3 w-3 rounded border-slate-300 text-[#2563eb] focus:ring-[#2563eb]/25 accent-[#2563eb]"
             />
             <span className="font-medium">{allLabel}</span>
@@ -224,7 +227,7 @@ function MultiSelect({
             >
               <input
                 type="checkbox"
-                checked={allSelected || selected.includes(o)}
+                checked={selected.includes(o)}
                 onChange={() => toggleItem(o)}
                 className="h-3 w-3 rounded border-slate-300 text-[#2563eb] focus:ring-[#2563eb]/25 accent-[#2563eb]"
               />

@@ -55,11 +55,15 @@ export default function Home() {
   const [staffingParams, setStaffingParams] = useState<StaffingParams>(DEFAULT_STAFFING_PARAMS);
   const [activeTab, setActiveTab] = useState<TabId>("hourly");
 
-  const isAll = selectedOrigins.length === 0;
+  // `selectedOrigins` is now an explicit list of what is checked. An empty
+  // array means "no origins selected" (no rows match), while a list equal to
+  // every available origin is treated as "all" (no filter).
+  const allOrigins = parseResult?.origins ?? [];
+  const isAll = allOrigins.length > 0 && selectedOrigins.length === allOrigins.length;
   const isOnlyChat = selectedOrigins.length === 1 && selectedOrigins[0].toLowerCase() === "chat";
   const isOnlyEmail = selectedOrigins.length === 1 && selectedOrigins[0].toLowerCase() === "email";
-  const chatIncluded = isAll || selectedOrigins.some((o) => o.toLowerCase() === "chat");
-  const emailIncluded = isAll || selectedOrigins.some((o) => o.toLowerCase() === "email");
+  const chatIncluded = selectedOrigins.some((o) => o.toLowerCase() === "chat");
+  const emailIncluded = selectedOrigins.some((o) => o.toLowerCase() === "email");
   const isBothIncluded = chatIncluded && emailIncluded && !isOnlyChat && !isOnlyEmail;
 
   const handleOriginsChange = useCallback((origins: string[]) => {
@@ -85,8 +89,10 @@ export default function Home() {
         setParseResult(result);
         setFileName(name);
         setSelectedTeam("__all__");
-        setSelectedSpecializations([]);
-        setSelectedOrigins([]);
+        // Initialize multi-selects to every available option so the dashboard
+        // starts in an "All ..." state (canonical: every option checked).
+        setSelectedSpecializations(result.specializations);
+        setSelectedOrigins(result.origins);
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : "Failed to parse file");
         setParseResult(null);
@@ -98,8 +104,6 @@ export default function Home() {
   );
 
   const team = selectedTeam === "__all__" ? undefined : selectedTeam;
-  const spec: string[] | undefined = selectedSpecializations.length === 0 ? undefined : selectedSpecializations;
-  const originFilter: string[] | undefined = selectedOrigins.length === 0 ? undefined : selectedOrigins;
   const teamLabel = selectedTeam === "__all__" ? "All Teams" : selectedTeam;
 
   // Specializations available given the currently-selected team.
@@ -116,22 +120,46 @@ export default function Home() {
     return Array.from(set).sort();
   }, [parseResult, team]);
 
-  // If the team changes, drop any selected specializations that aren't valid
-  // for the new team. If none remain, the dropdown effectively shows "All".
+  // If the team changes, prune selected specializations to those still valid
+  // for the new team. If pruning leaves the list empty (none of the previous
+  // selections apply) we default back to "all available for new team" so the
+  // user isn't accidentally left with a no-data view.
   const handleTeamChange = useCallback(
     (newTeam: string) => {
       setSelectedTeam(newTeam);
-      if (newTeam === "__all__" || !parseResult) {
-        return;
+      if (!parseResult) return;
+
+      let newAvailable: string[];
+      if (newTeam === "__all__") {
+        newAvailable = parseResult.specializations;
+      } else {
+        const set = new Set<string>();
+        for (const r of parseResult.rows) {
+          if (r.team === newTeam && r.specialization && r.specialization !== "Unknown") {
+            set.add(r.specialization);
+          }
+        }
+        newAvailable = Array.from(set).sort();
       }
-      const allowed = new Set<string>();
-      for (const r of parseResult.rows) {
-        if (r.team === newTeam) allowed.add(r.specialization);
-      }
-      setSelectedSpecializations((prev) => prev.filter((s) => allowed.has(s)));
+
+      setSelectedSpecializations((prev) => {
+        if (prev.length === 0) return prev; // user explicitly deselected all → keep
+        const allowedSet = new Set(newAvailable);
+        const filtered = prev.filter((s) => allowedSet.has(s));
+        return filtered.length === 0 ? newAvailable : filtered;
+      });
     },
     [parseResult]
   );
+
+  // A filter is only applied when the selection is a strict subset. If every
+  // option is selected we pass `undefined` (no filter) for performance and
+  // clarity. An empty selection means "no rows match" and is passed through
+  // explicitly so the result table goes blank as expected.
+  const allSpecsSelected = availableSpecializations.length > 0 && selectedSpecializations.length === availableSpecializations.length;
+  const allOriginsSelected = allOrigins.length > 0 && selectedOrigins.length === allOrigins.length;
+  const spec: string[] | undefined = allSpecsSelected ? undefined : selectedSpecializations;
+  const originFilter: string[] | undefined = allOriginsSelected ? undefined : selectedOrigins;
 
   // --- Per-origin arrival + forecast (always computed for blended AHT and blended staffing) ---
   const chatArrivalHourly = useMemo(() => {
@@ -302,8 +330,12 @@ export default function Home() {
     : (STAFFING_MODELS.find((m) => m.id === staffingModel)?.label ?? "");
   const filterParts: string[] = [];
   if (selectedTeam !== "__all__") filterParts.push(selectedTeam);
-  if (selectedSpecializations.length > 0) filterParts.push(selectedSpecializations.join(", "));
-  if (selectedOrigins.length > 0) filterParts.push(selectedOrigins.join(", "));
+  if (selectedSpecializations.length > 0 && !allSpecsSelected) {
+    filterParts.push(selectedSpecializations.join(", "));
+  }
+  if (selectedOrigins.length > 0 && !allOriginsSelected) {
+    filterParts.push(selectedOrigins.join(", "));
+  }
   const filterLabel = filterParts.length > 0 ? ` \u2014 ${filterParts.join(" / ")}` : "";
   const concLabel = isOnlyChat && staffingParams.concurrency > 1 ? `, Concurrency: ${staffingParams.concurrency}` : "";
   const factorLabel = mf !== 1 ? `, Factor: ${mf}×` : "";
