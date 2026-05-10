@@ -8,6 +8,9 @@ import DistributionTable from "@/components/DistributionTable";
 import SummaryCards from "@/components/SummaryCards";
 import LaborPlanTable from "@/components/LaborPlanTable";
 import MonthlySummaryCards from "@/components/MonthlySummaryCards";
+import ShiftPlanTable from "@/components/ShiftPlanTable";
+import ShiftSummaryCards from "@/components/ShiftSummaryCards";
+import ShiftStartSummary from "@/components/ShiftStartSummary";
 import { parseFile, ParseResult } from "@/lib/parser";
 import {
   computeArrivalPattern,
@@ -33,8 +36,22 @@ import {
   DEFAULT_STAFFING_PARAMS,
   STAFFING_MODELS,
 } from "@/lib/staffing";
+import {
+  generateShiftCatalog,
+  detectOperatingWindow,
+  slotToTime,
+  slotToAmPm,
+} from "@/lib/shifts";
+import { solveShiftCoverage } from "@/lib/scheduler";
 
-type TabId = "hourly" | "15min" | "yearly";
+// Fixed shift start times for the operations roster, in 15-min slot indices:
+//   05:00 = 20, 06:00 = 24, 07:00 = 28, 08:00 = 32,
+//   09:00 = 36, 16:30 = 66, 17:30 = 70.
+// Late starts span past midnight (17:30 + 8.5h = 02:00 next day).
+const FIXED_SHIFT_STARTS_SLOTS = [20, 24, 28, 32, 36, 66, 70] as const;
+
+type TabId = "hourly" | "15min" | "yearly" | "shifts";
+type PlanHorizon = 1 | 2;
 
 function applyFactor(matrix: ArrivalMatrix, factor: number): ArrivalMatrix {
   if (factor === 1) return matrix;
@@ -50,10 +67,26 @@ export default function Home() {
   const [selectedTeam, setSelectedTeam] = useState("__all__");
   const [selectedSpecializations, setSelectedSpecializations] = useState<string[]>([]);
   const [selectedOrigins, setSelectedOrigins] = useState<string[]>([]);
-  const [forecastModel, setForecastModel] = useState<ForecastModel>("hw_enhanced");
+  // Defaults: Double Exponential forecast for every origin selection. The
+  // chat-side staffing uses Erlang-C (with concurrency 2), the email-side
+  // uses Workload Spread Backward, and combined ("All Origins") runs both
+  // paths and sums via calculateBlendedStaffing.
+  const [forecastModel, setForecastModel] = useState<ForecastModel>("double_exp");
   const [staffingModel, setStaffingModel] = useState<StaffingModel>("erlang_c");
-  const [staffingParams, setStaffingParams] = useState<StaffingParams>(DEFAULT_STAFFING_PARAMS);
+  const [staffingParams, setStaffingParams] = useState<StaffingParams>({
+    ...DEFAULT_STAFFING_PARAMS,
+    concurrency: 2,
+  });
   const [activeTab, setActiveTab] = useState<TabId>("hourly");
+
+  // Shift-planning controls (used only on the "Shift Plan" tab)
+  const [planHorizon, setPlanHorizon] = useState<PlanHorizon>(1);
+  const [coverageBufferPct, setCoverageBufferPct] = useState<number>(0); // 0..1
+  // Selected weekdays to schedule (0=Sun ... 6=Sat). Default Mon–Fri.
+  const [scheduleDays, setScheduleDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  // Manual HC pins per shift start. Empty = use auto-computed value.
+  // Map key is the start slot index (e.g., 36 for 09:00 AM).
+  const [shiftOverrides, setShiftOverrides] = useState<Record<number, number>>({});
 
   // `selectedOrigins` is now an explicit list of what is checked. An empty
   // array means "no origins selected" (no rows match), while a list equal to
@@ -66,19 +99,49 @@ export default function Home() {
   const emailIncluded = selectedOrigins.some((o) => o.toLowerCase() === "email");
   const isBothIncluded = chatIncluded && emailIncluded && !isOnlyChat && !isOnlyEmail;
 
-  const handleOriginsChange = useCallback((origins: string[]) => {
-    setSelectedOrigins(origins);
-    if (origins.length === 1) {
-      const o = origins[0].toLowerCase();
-      if (o === "chat") {
-        setForecastModel("hw_enhanced");
-        setStaffingModel("erlang_c");
-      } else if (o === "email") {
-        setForecastModel("hw_enhanced");
-        setStaffingModel("workload_spread_back");
+  const handleOriginsChange = useCallback(
+    (origins: string[]) => {
+      setSelectedOrigins(origins);
+      // Forecasting default is Double Exponential across every origin
+      // selection. Staffing model auto-switches based on which origins are
+      // included; concurrency = 2 whenever chat is part of the selection.
+      setForecastModel("double_exp");
+
+      const lower = origins.map((o) => o.toLowerCase());
+      const includesChat = lower.includes("chat");
+      const includesEmail = lower.includes("email");
+      const isAllSelected =
+        parseResult !== null && origins.length === parseResult.origins.length;
+
+      if (origins.length === 1) {
+        if (lower[0] === "chat") {
+          setStaffingModel("erlang_c");
+          setStaffingParams((prev) => ({ ...prev, concurrency: 2 }));
+        } else if (lower[0] === "email") {
+          setStaffingModel("workload_spread_back");
+          setStaffingParams((prev) => ({ ...prev, concurrency: 1 }));
+        }
+        return;
       }
-    }
-  }, []);
+
+      // Multi-origin or "All Origins": blended staffing is applied
+      // automatically when both chat and email are included; the dropdown
+      // model only matters for non-blended (single-origin) selections.
+      if (isAllSelected || (includesChat && includesEmail)) {
+        setStaffingParams((prev) => ({ ...prev, concurrency: 2 }));
+        return;
+      }
+
+      // Subset that doesn't include chat (e.g., Email + Web): drop concurrency.
+      if (!includesChat) {
+        setStaffingParams((prev) => ({ ...prev, concurrency: 1 }));
+      } else {
+        // Subset that includes chat but not email: keep concurrency 2.
+        setStaffingParams((prev) => ({ ...prev, concurrency: 2 }));
+      }
+    },
+    [parseResult],
+  );
 
   const handleFileLoaded = useCallback(
     async (buffer: ArrayBuffer, name: string) => {
@@ -289,6 +352,37 @@ export default function Home() {
     return calculateStaffing("workload_spread_back", emailForecast15, { ...emailParams, intervalMinutes: 15 }, false);
   }, [emailForecast15, emailParams]);
 
+  // --- Shift Plan pipeline ---
+  // Auto-detect the operating window from the forecasted requirement so the
+  // shift catalog only generates candidates that can actually start in that
+  // window. Operations are mostly 6 AM PT chat-window with some out-of-hours
+  // demand; the detected bounds adapt automatically.
+  const operatingWindow = useMemo(() => {
+    if (!staffingMatrix15) return null;
+    return detectOperatingWindow(staffingMatrix15);
+  }, [staffingMatrix15]);
+
+  // Fixed shift catalog: 8 allowed starts (4 AM – 9 AM hourly + 16:30 / 17:30
+  // late shifts). Late shifts wrap past midnight; the scheduler accounts for
+  // their post-midnight productive slots on the next day.
+  const shiftCatalog = useMemo(() => {
+    return generateShiftCatalog({
+      startSlots: [...FIXED_SHIFT_STARTS_SLOTS],
+      allowMidnightWrap: true,
+    });
+  }, []);
+
+  const shiftSchedule = useMemo(() => {
+    if (!staffingMatrix15 || shiftCatalog.length === 0) return null;
+    return solveShiftCoverage(staffingMatrix15, {
+      shifts: shiftCatalog,
+      daysScheduled: scheduleDays,
+      bufferPct: coverageBufferPct,
+      polish: true,
+      startSlotOverrides: shiftOverrides,
+    });
+  }, [staffingMatrix15, shiftCatalog, scheduleDays, coverageBufferPct, shiftOverrides]);
+
   // --- Yearly pipeline (52 weeks x 7 days) ---
   const yearlyHistory = useMemo(() => {
     if (!parseResult) return null;
@@ -457,6 +551,7 @@ export default function Home() {
                 { id: "hourly" as TabId, label: "Hourly Requirement" },
                 { id: "15min" as TabId, label: "15 Min Requirement" },
                 { id: "yearly" as TabId, label: "Yearly Forecast" },
+                { id: "shifts" as TabId, label: "Shift Plan" },
               ]).map((tab) => (
                 <button
                   key={tab.id}
@@ -506,7 +601,161 @@ export default function Home() {
               </div>
             )}
 
-            {activeTab !== "yearly" && hasData && (
+            {activeTab === "shifts" && shiftSchedule && operatingWindow && staffingMatrix15 && (
+              <div className="space-y-4">
+                {/* Planning controls */}
+                <div className="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900">
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="flex flex-col">
+                      <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-1">
+                        Plan Horizon
+                      </label>
+                      <div className="inline-flex rounded-md border border-slate-200 dark:border-slate-700 overflow-hidden text-[11px]">
+                        {([1, 2] as PlanHorizon[]).map((h) => (
+                          <button
+                            key={h}
+                            onClick={() => setPlanHorizon(h)}
+                            className={`px-3 py-1.5 transition-colors ${
+                              planHorizon === h
+                                ? "bg-[#4f46e5] text-white"
+                                : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+                            }`}
+                          >
+                            {h} Week{h > 1 ? "s" : ""}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col">
+                      <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-1">
+                        Working Days
+                      </label>
+                      <div className="inline-flex rounded-md border border-slate-200 dark:border-slate-700 overflow-hidden text-[11px]">
+                        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d, di) => {
+                          const active = scheduleDays.includes(di);
+                          return (
+                            <button
+                              key={d}
+                              onClick={() => {
+                                setScheduleDays((prev) =>
+                                  prev.includes(di) ? prev.filter((x) => x !== di) : [...prev, di].sort(),
+                                );
+                              }}
+                              className={`px-2.5 py-1.5 border-r border-slate-200 dark:border-slate-700 last:border-r-0 transition-colors ${
+                                active
+                                  ? "bg-[#4f46e5]/10 text-[#4f46e5] font-medium dark:bg-indigo-500/20 dark:text-indigo-300"
+                                  : "bg-white dark:bg-slate-900 text-slate-400 dark:text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800"
+                              }`}
+                            >
+                              {d}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col">
+                      <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-1">
+                        Buffer %
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={50}
+                        step={1}
+                        value={Math.round(coverageBufferPct * 100)}
+                        onChange={(e) => {
+                          const v = Math.max(0, Math.min(50, Number(e.target.value) || 0));
+                          setCoverageBufferPct(v / 100);
+                        }}
+                        className="w-20 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-[11px] text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-[#4f46e5]"
+                      />
+                    </div>
+
+                    <div className="flex-1 min-w-[260px] text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                      <div>
+                        <span className="font-medium text-slate-600 dark:text-slate-300">Allowed starts:</span>{" "}
+                        {FIXED_SHIFT_STARTS_SLOTS.map((s) => slotToAmPm(s)).join(" · ")}
+                      </div>
+                      <div className="mt-0.5 text-slate-400 dark:text-slate-500">
+                        8h work + 30m lunch + 2×15m breaks · {shiftCatalog.length} candidates · data window {slotToTime(operatingWindow.firstSlot)}–{slotToTime(operatingWindow.lastSlot + 1)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <ShiftSummaryCards schedule={shiftSchedule} weeks={planHorizon} />
+
+                <ShiftStartSummary
+                  title="HC by Shift Start"
+                  subtitle={`Agents needed at each start time to crunch forecasted volume${filterLabel} · pin a value to lock that shift`}
+                  schedule={shiftSchedule}
+                  startSlots={[...FIXED_SHIFT_STARTS_SLOTS]}
+                  forecastDates={forecastDates}
+                  overrides={shiftOverrides}
+                  onOverridesChange={setShiftOverrides}
+                />
+
+                <ShiftPlanTable
+                  title="Shift Coverage Plan"
+                  subtitle={`Greedy set-cover · 8.5h shift · multi-skill (chat + email)${filterLabel}`}
+                  schedule={shiftSchedule}
+                  forecastDates={forecastDates}
+                />
+
+                {/* Coverage vs Requirement: side-by-side heatmaps */}
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                  <ArrivalTable
+                    title="Required Headcount (per slot)"
+                    subtitle={`Demand from staffing model${filterLabel} (15 min)`}
+                    matrix={shiftSchedule.targetMatrix}
+                    colorScheme="rust"
+                    usePeakTotals
+                    formatRowLabel={formatSlot}
+                    forecastDates={forecastDates}
+                  />
+                  <ArrivalTable
+                    title="Scheduled Headcount (per slot)"
+                    subtitle={`Agents on the floor after the shift plan (15 min)`}
+                    matrix={shiftSchedule.scheduledMatrix}
+                    colorScheme="teal"
+                    usePeakTotals
+                    formatRowLabel={formatSlot}
+                    forecastDates={forecastDates}
+                  />
+                </div>
+
+                {/* Sat/Sun demand notice */}
+                {(() => {
+                  let weekendDemand = 0;
+                  for (let t = 0; t < 96; t++) {
+                    weekendDemand += (staffingMatrix15[t]?.[0] ?? 0) + (staffingMatrix15[t]?.[6] ?? 0);
+                  }
+                  const sched = scheduleDays;
+                  const skipWeekend = !sched.includes(0) && !sched.includes(6);
+                  if (skipWeekend && weekendDemand > 0) {
+                    return (
+                      <p className="text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2">
+                        Sat/Sun show forecasted staffing demand but are excluded from the working-day rotation.
+                        If weekend coverage is required, enable those days above to schedule a separate
+                        rotation (e.g., Tue–Sat or Sun–Thu agents).
+                      </p>
+                    );
+                  }
+                  return null;
+                })()}
+
+                {planHorizon === 2 && (
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 rounded-md px-3 py-2">
+                    The 2-week view repeats this plan for both weeks (steady-state forecast).
+                    Adjust the Multiply Factor to model promotions or campaign weeks separately.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {(activeTab === "hourly" || activeTab === "15min") && hasData && (
               <div className="space-y-4">
                 <SummaryCards
                   arrivalMatrix={aData.matrix}
