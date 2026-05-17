@@ -32,10 +32,17 @@ interface TimestampParts {
 /**
  * Extract hour, minute and date directly from the raw value's string representation
  * so we always use the source timezone, never the browser's local timezone.
+ *
+ * Supported formats:
+ *   - ISO: 2026-04-13T10:30:00 or 2026-04-13 10:30:00
+ *   - DD/MM/YYYY HH:MM AM/PM [TZ]  (e.g., 13/04/2026 10:10 AM PDT)
+ *   - MM/DD/YYYY HH:MM AM/PM [TZ]  (US format, detected by context)
+ *   - Excel serial date number
  */
 function parseTimestamp(value: unknown): TimestampParts | null {
   const raw = value instanceof Date ? value.toISOString() : String(value ?? "");
 
+  // 1. ISO format: YYYY-MM-DD[T ]HH:MM
   const isoMatch = raw.match(/(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/);
   if (isoMatch) {
     const localDate = isoMatch[1];
@@ -47,6 +54,53 @@ function parseTimestamp(value: unknown): TimestampParts | null {
     }
   }
 
+  // 2. DD/MM/YYYY or MM/DD/YYYY with 12-hour time + AM/PM + optional timezone
+  //    e.g., "13/04/2026 10:10 AM PDT" or "04/13/2026 10:10 AM PDT"
+  const slashMatch = raw.match(
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)?/i
+  );
+  if (slashMatch) {
+    const part1 = parseInt(slashMatch[1], 10); // could be DD or MM
+    const part2 = parseInt(slashMatch[2], 10); // could be MM or DD
+    const year = parseInt(slashMatch[3], 10);
+    let hour = parseInt(slashMatch[4], 10);
+    const minute = parseInt(slashMatch[5], 10);
+    const ampm = (slashMatch[6] || "").toUpperCase();
+
+    // Convert 12-hour to 24-hour if AM/PM present
+    if (ampm === "PM" && hour < 12) hour += 12;
+    if (ampm === "AM" && hour === 12) hour = 0;
+
+    // Heuristic: if part1 > 12 it must be a day (DD/MM/YYYY)
+    // if part2 > 12 it must be a day (MM/DD/YYYY)
+    // if both <= 12, assume DD/MM/YYYY (international format, more common in data exports)
+    let day: number, month: number;
+    if (part1 > 12) {
+      // DD/MM/YYYY
+      day = part1;
+      month = part2;
+    } else if (part2 > 12) {
+      // MM/DD/YYYY
+      month = part1;
+      day = part2;
+    } else {
+      // Ambiguous, default to DD/MM/YYYY (international)
+      day = part1;
+      month = part2;
+    }
+
+    // Validate
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const localDate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      // Create a Date object (using UTC to avoid browser TZ shifting)
+      const d = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
+      if (!isNaN(d.getTime())) {
+        return { date: d, hour, minute, localDate };
+      }
+    }
+  }
+
+  // 3. Excel serial date number
   if (typeof value === "number") {
     const excelEpoch = new Date(1899, 11, 30);
     const d = new Date(excelEpoch.getTime() + value * 86400000);

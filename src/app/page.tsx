@@ -385,16 +385,40 @@ export default function Home() {
     });
   }, []);
 
-  const shiftSchedule = useMemo(() => {
+  // Baseline schedule: what the scheduler would build with NO manual pins.
+  // We keep this around so that when the user does pin a shift, the new
+  // schedule can stay locked to the same overall headcount and rebalance
+  // across the other (non-pinned) shifts instead of just shrinking.
+  const baselineShiftSchedule = useMemo(() => {
     if (!staffingMatrix15 || shiftCatalog.length === 0) return null;
     return solveShiftCoverage(staffingMatrix15, {
       shifts: shiftCatalog,
       daysScheduled: scheduleDays,
       bufferPct: coverageBufferPct,
       polish: true,
-      startSlotOverrides: shiftOverrides,
     });
-  }, [staffingMatrix15, shiftCatalog, scheduleDays, coverageBufferPct, shiftOverrides]);
+  }, [staffingMatrix15, shiftCatalog, scheduleDays, coverageBufferPct]);
+
+  const shiftSchedule = useMemo(() => {
+    if (!staffingMatrix15 || shiftCatalog.length === 0) return null;
+    const hasOverrides = Object.keys(shiftOverrides).length > 0;
+    const targetTotalAgents = hasOverrides ? baselineShiftSchedule?.totalAgents : undefined;
+    return solveShiftCoverage(staffingMatrix15, {
+      shifts: shiftCatalog,
+      daysScheduled: scheduleDays,
+      bufferPct: coverageBufferPct,
+      polish: true,
+      startSlotOverrides: shiftOverrides,
+      targetTotalAgents,
+    });
+  }, [
+    staffingMatrix15,
+    shiftCatalog,
+    scheduleDays,
+    coverageBufferPct,
+    shiftOverrides,
+    baselineShiftSchedule,
+  ]);
 
   // --- Yearly pipeline (52 weeks x 7 days) ---
   const yearlyHistory = useMemo(() => {
@@ -702,12 +726,13 @@ export default function Home() {
 
                 <ShiftStartSummary
                   title="HC by Shift Start"
-                  subtitle={`Agents needed at each start time to crunch forecasted volume${filterLabel} · pin a value to lock that shift`}
+                  subtitle={`Agents needed at each start time to crunch forecasted volume${filterLabel} · pin a value to lock that shift · total stays at baseline, others rebalance`}
                   schedule={shiftSchedule}
                   startSlots={[...FIXED_SHIFT_STARTS_SLOTS]}
                   forecastDates={forecastDates}
                   overrides={shiftOverrides}
                   onOverridesChange={setShiftOverrides}
+                  lockedTotal={baselineShiftSchedule?.totalAgents}
                 />
 
                 <ShiftPlanTable

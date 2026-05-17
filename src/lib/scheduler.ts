@@ -78,6 +78,14 @@ export interface SolveOptions {
    * pass so the user-specified value is preserved.
    */
   startSlotOverrides?: Record<number, number>;
+  /**
+   * Target total roster size. After greedy fills demand, if the current
+   * total is below this value, more agents are added to non-pinned shifts
+   * (round-robin, weighted by demand coverage) until the total reaches the
+   * target. Lets the dashboard preserve the unconstrained-baseline roster
+   * size while the user redistributes individual shifts via pins.
+   */
+  targetTotalAgents?: number;
 }
 
 /** Pick the canonical variant for a given start slot (middle by lunch position). */
@@ -184,6 +192,52 @@ export function solveShiftCoverage(
     for (let t = 0; t < SLOTS_PER_DAY; t++) if (today[t]) gap[t] -= 1;
   }
 
+  // Step 2c: roster-size lock. If the caller provided a target total roster
+  // size (e.g. the unconstrained baseline), top up non-pinned shifts so the
+  // overall count is preserved. This is what makes pin reductions get
+  // redistributed across other shifts instead of shrinking the total.
+  const target = options.targetTotalAgents;
+  if (typeof target === "number" && target > 0) {
+    const currentTotal = () => Object.values(counts).reduce((a, b) => a + b, 0);
+
+    // Pool: prefer shifts the greedy already chose (so we don't introduce new
+    // variants out of nowhere). Fall back to all candidate shifts if there
+    // aren't any non-pinned shifts in the schedule yet (e.g., when pins are
+    // very heavy).
+    const weightOf = (idx: number) => {
+      const { today } = masks[idx];
+      let w = 0;
+      for (let t = 0; t < SLOTS_PER_DAY; t++) if (today[t]) w += peakReq[t];
+      // Keep a small base weight so even shifts whose slots are all "quiet"
+      // still get topped up rather than being skipped entirely.
+      return w + 1;
+    };
+
+    type Bucket = { shiftId: string; weight: number };
+    let pool: Bucket[] = Object.keys(counts)
+      .filter((sid) => !pinnedShiftIds.has(sid))
+      .map((sid) => {
+        const idx = shifts.findIndex((s) => s.id === sid);
+        return { shiftId: sid, weight: idx >= 0 ? weightOf(idx) : 1 };
+      });
+
+    if (pool.length === 0) {
+      pool = candidateIdx.map((i) => ({ shiftId: shifts[i].id, weight: weightOf(i) }));
+    }
+    pool.sort((a, b) => b.weight - a.weight);
+
+    if (pool.length > 0) {
+      let cursor = 0;
+      let guard = 0;
+      while (currentTotal() < target && guard < 10_000) {
+        const { shiftId } = pool[cursor % pool.length];
+        counts[shiftId] = (counts[shiftId] || 0) + 1;
+        cursor += 1;
+        guard += 1;
+      }
+    }
+  }
+
   // Step 3 + 4: apply the single count vector to every scheduled day, and
   // materialize the 96 × 7 scheduled matrix (including wrap into tomorrow).
   const applyMatrix = () => {
@@ -216,12 +270,22 @@ export function solveShiftCoverage(
     // Step 5: roster-wide trim. Try removing one agent from each shift
     // across the whole week; keep the drop only if every scheduled day's
     // coverage (today + wrap-in from prior working day) still meets target.
+    //
+    // When the caller locks the total roster size, polish must never push the
+    // total below that target (otherwise the lock from step 2c would be
+    // undone). We honor that here by short-circuiting trims once the current
+    // total reaches the lock.
+    const targetLock = typeof target === "number" && target > 0 ? target : null;
     let changed = true;
     while (changed) {
       changed = false;
       for (const sid of Object.keys(counts)) {
         if (counts[sid] <= 0) continue;
         if (pinnedShiftIds.has(sid)) continue; // never trim user-pinned shifts
+        if (targetLock !== null) {
+          const sum = Object.values(counts).reduce((a, b) => a + b, 0);
+          if (sum <= targetLock) break;
+        }
         const idx = shifts.findIndex((s) => s.id === sid);
         if (idx < 0) continue;
         const shift = shifts[idx];

@@ -23,6 +23,12 @@ interface ShiftStartSummaryProps {
    */
   overrides?: Record<number, number>;
   onOverridesChange?: (next: Record<number, number>) => void;
+  /**
+   * Optional locked roster size. When pins are active the scheduler holds the
+   * overall HC at the unconstrained-baseline level and rebalances across the
+   * remaining shifts, so we surface that number to the user.
+   */
+  lockedTotal?: number;
 }
 
 interface StartRow {
@@ -71,6 +77,7 @@ export default function ShiftStartSummary({
   forecastDates,
   overrides,
   onOverridesChange,
+  lockedTotal,
 }: ShiftStartSummaryProps) {
   const rows = useMemo(() => buildRows(schedule, startSlots), [schedule, startSlots]);
   const showDates = forecastDates && forecastDates.length === 7 && forecastDates.some((d) => d);
@@ -143,6 +150,14 @@ export default function ShiftStartSummary({
           <span className="rounded px-2 py-0.5 text-[10px] font-medium bg-teal-50 text-teal-800 dark:bg-teal-950/30 dark:text-teal-300">
             Peak HC: {peakTotal.toLocaleString()}
           </span>
+          {editable && hasAnyOverride && typeof lockedTotal === "number" && (
+            <span
+              className="rounded px-2 py-0.5 text-[10px] font-medium bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300"
+              title="Total roster size is locked to the unconstrained baseline. Reducing one pin redistributes those agents across the other non-pinned shifts."
+            >
+              Total locked: {lockedTotal.toLocaleString()}
+            </span>
+          )}
           {editable && hasAnyOverride && (
             <button
               onClick={clearAllOverrides}
