@@ -11,7 +11,7 @@ import MonthlySummaryCards from "@/components/MonthlySummaryCards";
 import ShiftPlanTable from "@/components/ShiftPlanTable";
 import ShiftSummaryCards from "@/components/ShiftSummaryCards";
 import ShiftStartSummary from "@/components/ShiftStartSummary";
-import { parseFile, ParseResult } from "@/lib/parser";
+import { parseFile, ParseResult, ParseProgress } from "@/lib/parser";
 import {
   computeArrivalPattern,
   computeArrivalPattern15,
@@ -63,6 +63,7 @@ export default function Home() {
   const [fileName, setFileName] = useState<string>("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [parseProgress, setParseProgress] = useState<ParseProgress | null>(null);
 
   const [selectedTeam, setSelectedTeam] = useState("__all__");
   const [selectedSpecializations, setSelectedSpecializations] = useState<string[]>([]);
@@ -154,8 +155,11 @@ export default function Home() {
     async (buffer: ArrayBuffer, name: string) => {
       setIsLoading(true);
       setError(null);
+      setParseProgress(null);
       try {
-        const result = await parseFile(buffer, name);
+        const result = await parseFile(buffer, name, (progress) => {
+          setParseProgress(progress);
+        });
         setParseResult(result);
         setFileName(name);
         setSelectedTeam("__all__");
@@ -172,6 +176,7 @@ export default function Home() {
         setParseResult(null);
       } finally {
         setIsLoading(false);
+        setParseProgress(null);
       }
     },
     []
@@ -536,7 +541,7 @@ export default function Home() {
       <main className="mx-auto max-w-[1920px] px-6 lg:px-8 py-5 space-y-4">
         {/* Controls */}
         <section className="rounded-lg border border-slate-200 bg-white p-4 space-y-3 dark:border-slate-700 dark:bg-slate-900">
-          <FileUpload onFileLoaded={handleFileLoaded} isLoading={isLoading} fileName={fileName} />
+          <FileUpload onFileLoaded={handleFileLoaded} isLoading={isLoading} fileName={fileName} progress={parseProgress} />
           {error && (
             <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700 dark:bg-red-950/20 dark:border-red-900 dark:text-red-400">
               {error}

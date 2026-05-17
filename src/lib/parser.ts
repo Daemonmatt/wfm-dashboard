@@ -22,6 +22,13 @@ export interface ParseResult {
   totalRows: number;
 }
 
+export interface ParseProgress {
+  phase: "reading" | "parsing" | "processing" | "done";
+  current: number;
+  total: number;
+  message: string;
+}
+
 interface TimestampParts {
   date: Date;
   hour: number;
@@ -129,20 +136,52 @@ function findColumn(headers: string[], candidates: string[]): number {
   return -1;
 }
 
+/**
+ * Yield to the browser event loop to keep UI responsive during heavy parsing.
+ */
+function yieldToMain(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 export async function parseFile(
   buffer: ArrayBuffer,
-  _fileName: string
+  _fileName: string,
+  onProgress?: (progress: ParseProgress) => void
 ): Promise<ParseResult> {
+  // Phase 1: Reading file
+  onProgress?.({ phase: "reading", current: 0, total: 100, message: "Reading file..." });
+  await yieldToMain();
+
   const XLSX = await import("xlsx");
 
-  const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
+  // Use dense mode for better memory efficiency with large files
+  const workbook = XLSX.read(buffer, {
+    type: "array",
+    cellDates: true,
+    dense: true, // Memory-efficient for large files
+  });
+
+  onProgress?.({ phase: "reading", current: 50, total: 100, message: "Extracting sheet data..." });
+  await yieldToMain();
+
   const sheetName = workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetName];
+
+  // For dense sheets, convert to JSON
   const json: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
   if (json.length < 2) {
     throw new Error("File must have at least a header row and one data row.");
   }
+
+  const totalDataRows = json.length - 1;
+  onProgress?.({
+    phase: "parsing",
+    current: 0,
+    total: totalDataRows,
+    message: `Found ${totalDataRows.toLocaleString()} rows to process...`,
+  });
+  await yieldToMain();
 
   const headers = (json[0] as string[]).map((h) => String(h ?? "").trim());
 
@@ -186,6 +225,10 @@ export async function parseFile(
   let minDate: Date | null = null;
   let maxDate: Date | null = null;
 
+  // Process in chunks to keep UI responsive
+  const CHUNK_SIZE = 10000;
+  let lastProgressUpdate = Date.now();
+
   for (let i = 1; i < json.length; i++) {
     const row = json[i];
     if (!row || row.length === 0) continue;
@@ -217,11 +260,31 @@ export async function parseFile(
 
     if (!minDate || parts.date < minDate) minDate = parts.date;
     if (!maxDate || parts.date > maxDate) maxDate = parts.date;
+
+    // Update progress every CHUNK_SIZE rows or every 200ms
+    const now = Date.now();
+    if ((i % CHUNK_SIZE === 0) || (now - lastProgressUpdate > 200)) {
+      onProgress?.({
+        phase: "processing",
+        current: i,
+        total: totalDataRows,
+        message: `Processing row ${i.toLocaleString()} of ${totalDataRows.toLocaleString()}...`,
+      });
+      lastProgressUpdate = now;
+      await yieldToMain(); // Allow UI to update
+    }
   }
 
   if (rows.length === 0) {
     throw new Error("No valid data rows found after parsing.");
   }
+
+  onProgress?.({
+    phase: "done",
+    current: totalDataRows,
+    total: totalDataRows,
+    message: `Completed! ${rows.length.toLocaleString()} valid rows loaded.`,
+  });
 
   return {
     rows,
