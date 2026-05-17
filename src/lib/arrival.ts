@@ -156,19 +156,21 @@ export function getMatrixMax(matrix: ArrivalMatrix): number {
 }
 
 /**
- * Compute the 7 dates for the forecasted week (the week after the last week in data).
+ * Compute the 7 dates for the forecasted week.
+ * If lastDataDate is provided, forecast starts from the NEXT DAY after that date.
+ * Otherwise falls back to starting from the Sunday after the last week in data.
  * Returns an array of 7 strings indexed by day-of-week (0=Sun..6=Sat),
  * formatted like "13 Apr 26".
  */
-export function getForecastWeekDates(weeklyBreakdown: WeeklyBreakdown): string[] {
-  return buildForecastDates(weeklyBreakdown, "short");
+export function getForecastWeekDates(weeklyBreakdown: WeeklyBreakdown, lastDataDate?: Date): string[] {
+  return buildForecastDates(weeklyBreakdown, "short", lastDataDate);
 }
 
 /**
  * Like getForecastWeekDates but formatted as "Mon 04/06/26" for the labor plan.
  */
-export function getForecastWeekDatesLong(weeklyBreakdown: WeeklyBreakdown): string[] {
-  return buildForecastDates(weeklyBreakdown, "long");
+export function getForecastWeekDatesLong(weeklyBreakdown: WeeklyBreakdown, lastDataDate?: Date): string[] {
+  return buildForecastDates(weeklyBreakdown, "long", lastDataDate);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -274,35 +276,52 @@ export function buildMonthlyBuckets(baseSunday: Date, weeks = 52): MonthlyBucket
   );
 }
 
-function buildForecastDates(weeklyBreakdown: WeeklyBreakdown, style: "short" | "long"): string[] {
-  const weeks = Object.keys(weeklyBreakdown).sort();
-  if (weeks.length === 0) return Array(7).fill("");
-
-  const lastWeekSunday = weeks[weeks.length - 1];
-  const [y, m, d] = lastWeekSunday.split("-").map(Number);
-  const sundayOfLastWeek = new Date(y, m - 1, d);
-
-  const forecastSunday = new Date(sundayOfLastWeek);
-  forecastSunday.setDate(forecastSunday.getDate() + 7);
-
+/**
+ * Build forecast dates starting from the day AFTER the last data date.
+ * The returned array is indexed by day-of-week (0=Sun..6=Sat) to align
+ * with the forecast matrix columns.
+ */
+function buildForecastDates(
+  weeklyBreakdown: WeeklyBreakdown,
+  style: "short" | "long",
+  lastDataDate?: Date
+): string[] {
   const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const DAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const dates: string[] = [];
-  for (let dow = 0; dow < 7; dow++) {
-    const dt = new Date(forecastSunday);
-    dt.setDate(dt.getDate() + dow);
-    if (style === "long") {
-      const dn = DAY_ABBR[dt.getDay()];
-      const mm = String(dt.getMonth() + 1).padStart(2, "0");
-      const dd = String(dt.getDate()).padStart(2, "0");
-      const yy = String(dt.getFullYear()).slice(2);
-      dates.push(`${dn} ${mm}/${dd}/${yy}`);
-    } else {
-      const dd = dt.getDate();
-      const mm = MONTHS_SHORT[dt.getMonth()];
-      const yy = String(dt.getFullYear()).slice(2);
-      dates.push(`${dd} ${mm} ${yy}`);
-    }
+
+  // Determine the first forecast date (day after last data)
+  let forecastStart: Date;
+
+  if (lastDataDate) {
+    // Start from the next day after the last data date
+    forecastStart = new Date(lastDataDate);
+    forecastStart.setDate(forecastStart.getDate() + 1);
+  } else {
+    // Fallback: use the Sunday after the last week in the breakdown
+    const weeks = Object.keys(weeklyBreakdown).sort();
+    if (weeks.length === 0) return Array(7).fill("");
+
+    const lastWeekSunday = weeks[weeks.length - 1];
+    const [y, m, d] = lastWeekSunday.split("-").map(Number);
+    forecastStart = new Date(y, m - 1, d);
+    forecastStart.setDate(forecastStart.getDate() + 7);
   }
+
+  // Build dates for the next 7 days, indexed by day-of-week
+  // The forecast matrix columns are indexed 0=Sun..6=Sat, so we need to
+  // place each date in the slot matching its actual day of week
+  const dates: string[] = Array(7).fill("");
+  for (let i = 0; i < 7; i++) {
+    const dt = new Date(forecastStart);
+    dt.setDate(dt.getDate() + i);
+    const dow = dt.getDay(); // 0=Sun..6=Sat
+
+    const formatted = style === "long"
+      ? `${DAY_ABBR[dow]} ${String(dt.getMonth() + 1).padStart(2, "0")}/${String(dt.getDate()).padStart(2, "0")}/${String(dt.getFullYear()).slice(2)}`
+      : `${dt.getDate()} ${MONTHS_SHORT[dt.getMonth()]} ${String(dt.getFullYear()).slice(2)}`;
+
+    dates[dow] = formatted;
+  }
+
   return dates;
 }

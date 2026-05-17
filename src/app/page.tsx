@@ -492,13 +492,16 @@ export default function Home() {
 
   const forecastDates = useMemo(() => {
     if (!aData) return undefined;
-    return getForecastWeekDates(aData.weeklyBreakdown);
-  }, [aData]);
+    // Pass the actual last date from data so forecast starts from the next day
+    const lastDate = parseResult?.dateRange?.max;
+    return getForecastWeekDates(aData.weeklyBreakdown, lastDate);
+  }, [aData, parseResult?.dateRange?.max]);
 
   const forecastDatesLong = useMemo(() => {
     if (!aData) return undefined;
-    return getForecastWeekDatesLong(aData.weeklyBreakdown);
-  }, [aData]);
+    const lastDate = parseResult?.dateRange?.max;
+    return getForecastWeekDatesLong(aData.weeklyBreakdown, lastDate);
+  }, [aData, parseResult?.dateRange?.max]);
 
   const hasData = aData && fMatrix && sMatrix;
 
