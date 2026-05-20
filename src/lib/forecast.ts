@@ -1,6 +1,6 @@
 import { ArrivalMatrix, WeeklyBreakdown, WeeklyDailyData } from "./arrival";
 
-export type ForecastModel = "wma" | "holt_winters" | "hw_enhanced" | "sarima" | "sma" | "linear_regression" | "double_exp";
+export type ForecastModel = "wma" | "holt_winters" | "hw_enhanced" | "sarima" | "sma" | "linear_regression" | "double_exp" | "prophet_inspired";
 
 export const FORECAST_MODELS: { id: ForecastModel; label: string; description: string }[] = [
   {
@@ -12,6 +12,11 @@ export const FORECAST_MODELS: { id: ForecastModel; label: string; description: s
     id: "hw_enhanced",
     label: "Holt-Winters Enhanced",
     description: "Damped trend + outlier-filtered triple exponential smoothing",
+  },
+  {
+    id: "prophet_inspired",
+    label: "Prophet-Inspired",
+    description: "Piecewise linear trend + Fourier weekly seasonality (like Facebook Prophet)",
   },
   {
     id: "sarima",
@@ -360,6 +365,234 @@ function doubleExponentialSmoothing(weeklyBreakdown: WeeklyBreakdown): ArrivalMa
   return result;
 }
 
+/**
+ * Prophet-Inspired Forecasting Model
+ *
+ * Implements key concepts from Facebook's Prophet:
+ * 1. Piecewise linear trend with automatic changepoint detection
+ * 2. Weekly seasonality using Fourier series
+ * 3. Additive decomposition: y(t) = trend(t) + seasonality(t)
+ *
+ * This is a TypeScript implementation that captures Prophet's core ideas
+ * without requiring Python or external dependencies.
+ */
+function prophetInspired(weeklyBreakdown: WeeklyBreakdown): ArrivalMatrix {
+  const weeks = Object.keys(weeklyBreakdown).sort();
+  const n = weeks.length;
+  const SLOTS = getSlotCount(weeklyBreakdown);
+  if (n === 0) return Array.from({ length: SLOTS }, () => Array(7).fill(0));
+
+  const result: ArrivalMatrix = Array.from({ length: SLOTS }, () => Array(7).fill(0));
+  const SEASON = 7;
+
+  for (let h = 0; h < SLOTS; h++) {
+    // Build the time series: flatten weeks into a single series
+    const series: number[] = [];
+    for (const wk of weeks) {
+      for (let d = 0; d < 7; d++) {
+        series.push(weeklyBreakdown[wk][h][d]);
+      }
+    }
+
+    const T = series.length;
+    if (T < SEASON) {
+      // Fallback for very short series
+      for (let d = 0; d < 7; d++) {
+        let sum = 0, cnt = 0;
+        for (const wk of weeks) { sum += weeklyBreakdown[wk][h][d]; cnt++; }
+        result[h][d] = cnt > 0 ? Math.round(sum / cnt) : 0;
+      }
+      continue;
+    }
+
+    // Step 1: Extract weekly seasonality using Fourier decomposition
+    // Prophet uses Fourier terms for seasonality. For weekly with period 7,
+    // we use sin/cos pairs at harmonics 1, 2, 3
+    const seasonality = extractFourierSeasonality(series, SEASON, 3);
+
+    // Step 2: Deseasonalize the series
+    const deseasonalized = series.map((v, i) => v - seasonality[i % SEASON]);
+
+    // Step 3: Fit piecewise linear trend with changepoints
+    const trend = fitPiecewiseLinearTrend(deseasonalized);
+
+    // Step 4: Forecast trend for next 7 days
+    const lastTrend = trend[T - 1];
+    const trendSlope = T >= 2 ? (trend[T - 1] - trend[T - 2]) : 0;
+
+    // Step 5: Combine trend + seasonality for forecast
+    for (let d = 0; d < 7; d++) {
+      const forecastTrend = lastTrend + trendSlope * (d + 1);
+      const forecastSeasonality = seasonality[d];
+      result[h][d] = Math.max(0, Math.round(forecastTrend + forecastSeasonality));
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Extract weekly seasonality using Fourier series.
+ * Returns an array of length `period` with the seasonal component for each day.
+ */
+function extractFourierSeasonality(series: number[], period: number, numHarmonics: number): number[] {
+  const T = series.length;
+  const numCycles = Math.floor(T / period);
+  if (numCycles < 1) return new Array(period).fill(0);
+
+  // Calculate mean for each position in the period
+  const periodMeans = new Array(period).fill(0);
+  const periodCounts = new Array(period).fill(0);
+
+  for (let t = 0; t < T; t++) {
+    const pos = t % period;
+    periodMeans[pos] += series[t];
+    periodCounts[pos]++;
+  }
+
+  for (let p = 0; p < period; p++) {
+    periodMeans[p] = periodCounts[p] > 0 ? periodMeans[p] / periodCounts[p] : 0;
+  }
+
+  // Compute Fourier coefficients
+  const a: number[] = [];
+  const b: number[] = [];
+
+  for (let k = 1; k <= numHarmonics; k++) {
+    let ak = 0, bk = 0;
+    for (let p = 0; p < period; p++) {
+      const angle = (2 * Math.PI * k * p) / period;
+      ak += periodMeans[p] * Math.cos(angle);
+      bk += periodMeans[p] * Math.sin(angle);
+    }
+    a.push((2 * ak) / period);
+    b.push((2 * bk) / period);
+  }
+
+  // Reconstruct seasonality from Fourier terms
+  const seasonality = new Array(period).fill(0);
+  for (let p = 0; p < period; p++) {
+    let s = 0;
+    for (let k = 0; k < numHarmonics; k++) {
+      const angle = (2 * Math.PI * (k + 1) * p) / period;
+      s += a[k] * Math.cos(angle) + b[k] * Math.sin(angle);
+    }
+    seasonality[p] = s;
+  }
+
+  return seasonality;
+}
+
+/**
+ * Fit a piecewise linear trend with automatic changepoint detection.
+ * Uses a simplified version of Prophet's approach:
+ * - Detect potential changepoints at regular intervals
+ * - Fit linear segments between changepoints
+ * - Regularize to prevent overfitting
+ */
+function fitPiecewiseLinearTrend(series: number[]): number[] {
+  const T = series.length;
+  if (T === 0) return [];
+  if (T === 1) return [series[0]];
+
+  // Number of potential changepoints (Prophet default: 25 over 80% of data)
+  const numChangepoints = Math.min(5, Math.floor(T / 7));
+  if (numChangepoints < 1) {
+    // Simple linear trend for very short series
+    return fitSimpleLinearTrend(series);
+  }
+
+  // Place changepoints evenly in the first 80% of the series
+  const changepointRange = Math.floor(T * 0.8);
+  const changepoints: number[] = [];
+  for (let i = 1; i <= numChangepoints; i++) {
+    changepoints.push(Math.floor((i * changepointRange) / (numChangepoints + 1)));
+  }
+
+  // Detect significant changepoints using slope change detection
+  const activeChangepoints: number[] = [];
+  const windowSize = Math.max(3, Math.floor(T / (numChangepoints + 1) / 2));
+
+  for (const cp of changepoints) {
+    if (cp < windowSize || cp >= T - windowSize) continue;
+
+    // Calculate slope before and after changepoint
+    const beforeSlope = linearSlope(series.slice(Math.max(0, cp - windowSize), cp));
+    const afterSlope = linearSlope(series.slice(cp, Math.min(T, cp + windowSize)));
+
+    // If slope change is significant, mark as active changepoint
+    const slopeChange = Math.abs(afterSlope - beforeSlope);
+    const threshold = Math.abs(beforeSlope) * 0.5 + 0.1; // Relative + absolute threshold
+
+    if (slopeChange > threshold) {
+      activeChangepoints.push(cp);
+    }
+  }
+
+  // If no significant changepoints, use simple linear trend
+  if (activeChangepoints.length === 0) {
+    return fitSimpleLinearTrend(series);
+  }
+
+  // Fit piecewise linear using the active changepoints
+  const trend = new Array(T).fill(0);
+  const segments = [0, ...activeChangepoints, T];
+
+  for (let i = 0; i < segments.length - 1; i++) {
+    const start = segments[i];
+    const end = segments[i + 1];
+    const segment = series.slice(start, end);
+
+    if (segment.length === 0) continue;
+
+    // Fit linear trend to this segment
+    const slope = linearSlope(segment);
+    const mean = segment.reduce((a, b) => a + b, 0) / segment.length;
+    const midpoint = (segment.length - 1) / 2;
+
+    for (let t = start; t < end; t++) {
+      const localT = t - start;
+      trend[t] = mean + slope * (localT - midpoint);
+    }
+  }
+
+  return trend;
+}
+
+/**
+ * Calculate the slope of a simple linear fit.
+ */
+function linearSlope(series: number[]): number {
+  const n = series.length;
+  if (n < 2) return 0;
+
+  const xMean = (n - 1) / 2;
+  const yMean = series.reduce((a, b) => a + b, 0) / n;
+
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (i - xMean) * (series[i] - yMean);
+    den += (i - xMean) * (i - xMean);
+  }
+
+  return den !== 0 ? num / den : 0;
+}
+
+/**
+ * Fit a simple linear trend to the entire series.
+ */
+function fitSimpleLinearTrend(series: number[]): number[] {
+  const n = series.length;
+  if (n === 0) return [];
+  if (n === 1) return [series[0]];
+
+  const slope = linearSlope(series);
+  const mean = series.reduce((a, b) => a + b, 0) / n;
+  const midpoint = (n - 1) / 2;
+
+  return series.map((_, i) => mean + slope * (i - midpoint));
+}
+
 export function forecastVolume(
   model: ForecastModel,
   arrivalMatrix: ArrivalMatrix,
@@ -374,6 +607,8 @@ export function forecastVolume(
       return holtWinters(weeklyBreakdown);
     case "hw_enhanced":
       return holtWintersEnhanced(weeklyBreakdown);
+    case "prophet_inspired":
+      return prophetInspired(weeklyBreakdown);
     case "sarima":
       return sarima(weeklyBreakdown);
     case "linear_regression":
